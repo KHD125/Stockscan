@@ -202,21 +202,8 @@ TECHNICAL_COLS = {
 
 
 def _safe_numeric(series: pd.Series) -> pd.Series:
-    """Deep Cleaning: Handles symbols like %, Cr, ₹, and commas common in financial datasets."""
-    if series.dtype != object:
-        return series
-    
-    # Clean string artifacts
-    s = series.astype(str).str.replace('%', '', regex=False)
-    s = s.str.replace(',', '', regex=False)
-    s = s.str.replace('Cr', '', regex=False)
-    s = s.str.replace('₹', '', regex=False)
-    s = s.str.strip()
-    
-    # Handle known null placeholders
-    s = s.replace(['-', 'None', 'nan', 'NaN', 'null', ''], np.nan)
-    
-    return pd.to_numeric(s, errors='coerce')
+    """Convert a series to numeric, coercing errors (null strings, etc.) to NaN."""
+    return pd.to_numeric(series, errors='coerce')
 
 
 def extract_spreadsheet_id(url_or_id: str) -> str:
@@ -293,32 +280,31 @@ def load_all_csvs(data_source: str = "local", uploaded_files: dict = None, sheet
 
 
 def merge_datasets(datasets: Dict[str, pd.DataFrame]) -> pd.DataFrame:
-    """Merge all 6 datasets into a single master DataFrame on company_id.
-    Uses outer join to ensure no stock is lost, then preserves metadata.
-    """
-    print("\n🔗 Merging datasets (Deep Outer Join)...")
+    """Merge all 6 datasets into a single master DataFrame on company_id."""
+    print("\n🔗 Merging datasets...")
 
-    # Start with ratio as base
+    # Start with ratio as base (has all common cols)
     master = datasets["ratio"].copy()
 
-    # Subsequent merges
+    # For subsequent merges, only bring in sheet-specific columns + company_id
+    common_col_values = set(COMMON_COLS.values())
     for name in ["income", "balance", "cashflow", "shareholding", "technical"]:
         df = datasets[name]
-        
-        # Columns to bring over (exclude common metadata already in master)
-        bring_cols = ["company_id"] + [c for c in df.columns if c not in master.columns]
+        # Columns unique to this sheet (not in common)
+        unique_cols = [c for c in df.columns if c != "company_id"]
+        # Remove duplicates with master
+        existing = set(master.columns)
+        bring_cols = ["company_id"] + [c for c in unique_cols if c not in existing]
 
         master = master.merge(
             df[bring_cols],
             on="company_id",
-            how="outer",
+            how="left",
             suffixes=("", f"_{name}")
         )
-        print(f"  ✅ Merged {name}: {len(master)} rows")
+        print(f"  ✅ Merged {name}: {len(master)} rows, {len(master.columns)} cols")
 
-    # Final cleanup of master: ensure company name and metadata are filled if missing from 'ratio'
-    # but present in others (though they usually are all present)
-    print(f"\n📊 Master DataFrame Ready: {len(master)} stocks × {len(master.columns)} columns")
+    print(f"\n📊 Master DataFrame: {len(master)} stocks × {len(master.columns)} columns")
     return master
 
 
@@ -443,7 +429,7 @@ def compute_derived_signals(df: pd.DataFrame) -> pd.DataFrame:
         df["cwip"] / df["fixed_assets"] * 100,
         np.nan
     )
-    df["capex_3y"] = df.get("fixed_assets", 0) - df.get("fixed_assets_3yb", 0)
+    df["capex_3y"] = df["fixed_assets"] - df["fixed_assets_3yb"]
     df["inv_growth"] = np.where(
         df["inventory_1yb"].notna() & (df["inventory_1yb"] > 0),
         (df["inventory"] - df["inventory_1yb"]) / df["inventory_1yb"] * 100,
@@ -551,9 +537,9 @@ def build_master_dataframe(data_source: str = "local", uploaded_files: dict = No
     master = coerce_numeric_columns(master)
     master = compute_derived_signals(master)
 
-    # Filter out stocks below minimum market cap floor (using fillna(0) to preserve NaNs if floor is 0)
+    # Filter out stocks below minimum market cap floor
     before = len(master)
-    master = master[master["market_cap"].fillna(0) >= MCAP_MIN_FLOOR].reset_index(drop=True)
+    master = master[master["market_cap"] >= MCAP_MIN_FLOOR].reset_index(drop=True)
     filtered = before - len(master)
     if filtered > 0:
         print(f"\n🚫 Filtered {filtered} stocks below ₹{MCAP_MIN_FLOOR} Cr market cap floor")
