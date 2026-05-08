@@ -206,6 +206,19 @@ def _safe_numeric(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series, errors='coerce')
 
 
+def extract_spreadsheet_id(url_or_id: str) -> str:
+    """Extracts the Google Sheets ID from a full URL."""
+    import re
+    if not url_or_id:
+        return ""
+    if '/' not in url_or_id:
+        return url_or_id.strip()
+    sheets_pattern = r'/spreadsheets/d/([a-zA-Z0-9-_]+)'
+    match = re.search(sheets_pattern, url_or_id)
+    if match:
+        return match.group(1)
+    return url_or_id.strip()
+
 def _load_single_csv(filepath: str, col_map: Dict[str, str], sheet_name: str) -> pd.DataFrame:
     """Load a single CSV, apply column mapping, and return clean DataFrame."""
     # Row 0 = section headers (emojis), Row 1 = actual column names
@@ -226,23 +239,42 @@ def _load_single_csv(filepath: str, col_map: Dict[str, str], sheet_name: str) ->
     return df
 
 
-def load_all_csvs() -> Dict[str, pd.DataFrame]:
+def load_all_csvs(data_source: str = "local", uploaded_files: dict = None, sheet_id: str = None) -> Dict[str, pd.DataFrame]:
     """Load all 6 CSV files and return as a dict of DataFrames."""
     print("📂 Loading CSV data...")
     datasets = {}
+    
+    from config import DEFAULT_GIDS
 
     sheet_configs = {
-        "ratio":        (CSV_FILES["ratio"],        RATIO_COLS),
-        "income":       (CSV_FILES["income"],       INCOME_COLS),
-        "balance":      (CSV_FILES["balance"],      BALANCE_COLS),
-        "cashflow":     (CSV_FILES["cashflow"],     CASHFLOW_COLS),
-        "shareholding": (CSV_FILES["shareholding"], SHAREHOLDING_COLS),
-        "technical":    (CSV_FILES["technical"],     TECHNICAL_COLS),
+        "ratio":        (RATIO_COLS,),
+        "income":       (INCOME_COLS,),
+        "balance":      (BALANCE_COLS,),
+        "cashflow":     (CASHFLOW_COLS,),
+        "shareholding": (SHAREHOLDING_COLS,),
+        "technical":    (TECHNICAL_COLS,),
     }
 
-    for name, (path, cols) in sheet_configs.items():
-        datasets[name] = _load_single_csv(path, cols, name)
-        print(f"  ✅ {name}: {len(datasets[name])} rows, {len(datasets[name].columns)} cols")
+    if data_source == "upload" and uploaded_files is not None:
+        for name, (cols,) in sheet_configs.items():
+            if name in uploaded_files:
+                datasets[name] = _load_single_csv(uploaded_files[name], cols, name)
+            else:
+                raise FileNotFoundError(f"Missing uploaded file for {name}")
+    elif data_source == "sheet" and sheet_id:
+        parsed_id = extract_spreadsheet_id(sheet_id)
+        for name, (cols,) in sheet_configs.items():
+            gid = DEFAULT_GIDS.get(name, "0")
+            csv_url = f"https://docs.google.com/spreadsheets/d/{parsed_id}/export?format=csv&gid={gid}"
+            try:
+                datasets[name] = _load_single_csv(csv_url, cols, name)
+            except Exception as e:
+                raise Exception(f"Failed to load {name} from Google Sheets: {e}")
+    else:
+        for name, (cols,) in sheet_configs.items():
+            path = CSV_FILES[name]
+            datasets[name] = _load_single_csv(path, cols, name)
+            print(f"  ✅ {name}: {len(datasets[name])} rows, {len(datasets[name].columns)} cols")
 
     return datasets
 
@@ -497,9 +529,9 @@ def compute_derived_signals(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_master_dataframe() -> pd.DataFrame:
+def build_master_dataframe(data_source: str = "local", uploaded_files: dict = None, sheet_id: str = None) -> pd.DataFrame:
     """Complete pipeline: Load → Merge → Coerce → Derive → Return."""
-    datasets = load_all_csvs()
+    datasets = load_all_csvs(data_source=data_source, uploaded_files=uploaded_files, sheet_id=sheet_id)
     master = merge_datasets(datasets)
     master = coerce_numeric_columns(master)
     master = compute_derived_signals(master)
