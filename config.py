@@ -10,15 +10,40 @@ Single source of truth — every magic number lives here.
 # ═══════════════════════════════════════════════════════════════
 import os
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "CSV Data")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def _get_actual_path(base, folder_name, file_name):
+    # Case-insensitive resolution for Linux (Streamlit Cloud)
+    try:
+        # Find folder
+        actual_folder = folder_name
+        for item in os.listdir(base):
+            if item.lower() == folder_name.lower() and os.path.isdir(os.path.join(base, item)):
+                actual_folder = item
+                break
+        
+        folder_path = os.path.join(base, actual_folder)
+        
+        # Find file
+        actual_file = file_name
+        for item in os.listdir(folder_path):
+            if item.lower() == file_name.lower():
+                actual_file = item
+                break
+                
+        return os.path.join(folder_path, actual_file)
+    except Exception:
+        return os.path.join(base, folder_name, file_name)
+
+DATA_DIR_NAME = "CSV Data"
 
 CSV_FILES = {
-    "ratio":         os.path.join(DATA_DIR, "Stockscan - Ratio.csv"),
-    "income":        os.path.join(DATA_DIR, "Stockscan - Income Statement.csv"),
-    "balance":       os.path.join(DATA_DIR, "Stockscan - Balance Sheet.csv"),
-    "cashflow":      os.path.join(DATA_DIR, "Stockscan - Cashflow.csv"),
-    "shareholding":  os.path.join(DATA_DIR, "Stockscan - Shareholdings.csv"),
-    "technical":     os.path.join(DATA_DIR, "Stockscan - Technicals.csv"),
+    "ratio":         _get_actual_path(BASE_DIR, DATA_DIR_NAME, "Stockscan - Ratio.csv"),
+    "income":        _get_actual_path(BASE_DIR, DATA_DIR_NAME, "Stockscan - Income Statement.csv"),
+    "balance":       _get_actual_path(BASE_DIR, DATA_DIR_NAME, "Stockscan - Balance Sheet.csv"),
+    "cashflow":      _get_actual_path(BASE_DIR, DATA_DIR_NAME, "Stockscan - Cashflow.csv"),
+    "shareholding":  _get_actual_path(BASE_DIR, DATA_DIR_NAME, "Stockscan - Shareholdings.csv"),
+    "technical":     _get_actual_path(BASE_DIR, DATA_DIR_NAME, "Stockscan - Technicals.csv"),
 }
 
 # ═══════════════════════════════════════════════════════════════
