@@ -294,7 +294,7 @@ def render_stock_card(row: pd.Series, show_scores: bool = True):
                     {row.get('tier_emoji', '')} #{int(row.get('rank', 0))} · {row.get('name', 'N/A')}
                 </div>
                 <div style="font-size:0.75rem; color:{COLORS['text_secondary']}; margin-top:2px;">
-                    {row.get('sector', '')} · {row.get('industry', '')} · ₹{row.get('market_cap', 0):,.0f} Cr · {row.get('mcap_tier', '')}
+                    {row.get('sector', '')} · {row.get('industry', '')} · ₹{row.get('market_cap', 0):,.0f} Cr · {row.get('market_category', '')}
                 </div>
             </div>
             <div style="text-align:right;">
