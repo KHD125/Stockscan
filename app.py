@@ -144,7 +144,7 @@ with st.sidebar:
     sectors = ["All"] + sorted(df["sector"].dropna().unique().tolist())
     sel_sector = st.selectbox("Sector", sectors, key="sb_sector")
     sel_tier = st.multiselect("Conviction Tier", [1,2,3,4,5], default=[1,2,3], key="sb_tier")
-    sel_mcap = st.multiselect("Market Cap", ["Tier A","Tier B","Tier C"], default=["Tier A","Tier B","Tier C"], key="sb_mcap")
+    sel_mcap = st.multiselect("Market Cap", ["Mega Cap", "Large Cap", "Mid Cap", "Small Cap", "Micro Cap", "Nano Cap"], default=["Mega Cap", "Large Cap", "Mid Cap", "Small Cap", "Micro Cap", "Nano Cap"], key="sb_mcap")
     gate_only = st.checkbox("Gate-passed only", value=True, key="sb_gate")
     min_quality = st.slider("Min Quality Score", 0, 100, 0, key="sb_minq")
 
