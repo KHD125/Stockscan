@@ -21,8 +21,7 @@ from config import (
     MCAP_TIERS, MCAP_MIN_FLOOR,
     VALUATION_SIGNALS, PEG_ZONES, MEAN_REVERSION, BAID_SELL_TRIGGERS,
     DEFAULT_CYCLE_TEMPERATURE, MARKS_CYCLE,
-    QGLP_FRAMEWORK, WAVE_DETECTION, MARKET_REGIMES,
-    ANALYSIS_MODES, SCORING_PROFILES
+    QGLP_FRAMEWORK, WAVE_DETECTION, MARKET_REGIMES
 )
 
 
@@ -282,16 +281,12 @@ def _compute_valuation_score(df: pd.DataFrame) -> pd.Series:
     return _safe_clip(score)
 
 
-def compute_quality_score(df: pd.DataFrame, profile_name: str = "Balanced") -> pd.DataFrame:
+def compute_quality_score(df: pd.DataFrame) -> pd.DataFrame:
     """Compute the composite quality score (Layer 2).
     Integrates 6 sub-scores: Moat + Growth + Cash + Margin + Balance Sheet + Valuation.
-    Weights are dynamically loaded based on the selected SCORING_PROFILE.
-    """
+    Applies Marks' Mean Reversion Risk penalty for cyclical peak margins.
+    Detects Baid's Sell Triggers for existing holding alerts."""
     df = df.copy()
-    
-    # Resolve weights from profile
-    profile = SCORING_PROFILES.get(profile_name, SCORING_PROFILES["Balanced"])
-    w = profile["weights"]
 
     df["moat_score"] = _compute_moat_score(df)
     df["growth_score"] = _compute_growth_score(df)
@@ -300,14 +295,14 @@ def compute_quality_score(df: pd.DataFrame, profile_name: str = "Balanced") -> p
     df["balance_sheet_score"] = _compute_balance_sheet_score(df)
     df["valuation_score"] = _compute_valuation_score(df)
 
-    # Weighted composite using dynamic profile weights
+    # Weighted composite
     df["quality_score"] = (
-        df["moat_score"] * w["moat"] +
-        df["growth_score"] * w["growth"] +
-        df["cash_score"] * w["cash"] +
-        df["margin_score"] * w["margin"] +
-        df["balance_sheet_score"] * w["balance_sheet"] +
-        df["valuation_score"] * w["valuation"]
+        df["moat_score"] * QUALITY_WEIGHTS["moat"] +
+        df["growth_score"] * QUALITY_WEIGHTS["growth"] +
+        df["cash_score"] * QUALITY_WEIGHTS["cash"] +
+        df["margin_score"] * QUALITY_WEIGHTS["margin"] +
+        df["balance_sheet_score"] * QUALITY_WEIGHTS["balance_sheet"] +
+        df["valuation_score"] * QUALITY_WEIGHTS["valuation"]
     )
 
     # ── MEAN REVERSION RISK (Marks: "Extremes revert toward average") ──
@@ -533,19 +528,14 @@ def compute_governance_bonus(df: pd.DataFrame) -> pd.DataFrame:
 # LAYER 4: COMPOSITE + CONVICTION TIER
 # ═══════════════════════════════════════════════════════════════
 
-def compute_composite_score(df: pd.DataFrame, mode_name: str = "Hybrid") -> pd.DataFrame:
-    """Final composite score and conviction tier assignment.
-    Weights for Quality vs Momentum vs Governance are resolved via ANALYSIS_MODE.
-    """
+def compute_composite_score(df: pd.DataFrame) -> pd.DataFrame:
+    """Final composite score and conviction tier assignment."""
     df = df.copy()
-    
-    # Resolve weights from mode
-    mode = ANALYSIS_MODES.get(mode_name, ANALYSIS_MODES["Hybrid"])
 
     df["composite_score"] = (
-        df["quality_score"] * mode["quality"] +
-        df["momentum_score"] * mode["momentum"] +
-        df["governance_bonus"] * mode["governance"]
+        df["quality_score"] * COMPOSITE_WEIGHTS["quality"] +
+        df["momentum_score"] * COMPOSITE_WEIGHTS["momentum"] +
+        df["governance_bonus"] * COMPOSITE_WEIGHTS["governance"]
     )
 
     df["composite_score"] = _safe_clip(df["composite_score"])
@@ -666,17 +656,11 @@ def compute_qglp_score(df: pd.DataFrame) -> pd.DataFrame:
 # WAVE DETECTION: MARKET REGIME AWARENESS
 # ═══════════════════════════════════════════════════════════════
 
-def apply_market_regime(df: pd.DataFrame, profile_name: str = "Balanced") -> pd.DataFrame:
-    """Wave Detection: Auto-detect market state and apply scoring boosts.
-    Now respects the selected Scoring Profile during re-computation.
-    """
+def apply_market_regime(df: pd.DataFrame) -> pd.DataFrame:
+    """Wave Detection: Auto-detect market state and apply scoring boosts."""
     df = df.copy()
     
-    # Resolve weights from profile for re-computation
-    profile = SCORING_PROFILES.get(profile_name, SCORING_PROFILES["Balanced"])
-    w = profile["weights"]
-    
-    # Auto-detect regime based on breadth
+    # Auto-detect regime based on breadth (momentum > 0)
     if "crs_50d" in df.columns:
         breadth = (df["crs_50d"] > 0).mean()
         if breadth > 0.60:
@@ -691,22 +675,24 @@ def apply_market_regime(df: pd.DataFrame, profile_name: str = "Balanced") -> pd.
     df.attrs["detected_market_regime"] = regime
     
     if regime == "BULL":
+        # Boost momentum scores in bull market
         if "momentum_score" in df.columns:
             df["momentum_score"] = _safe_clip(df["momentum_score"] * MARKET_REGIMES["bull"]["boost_momentum"])
     elif regime == "BEAR":
+        # Boost deep value scores in bear market (distance from 52W high is highly negative)
         if "dist_52wh" in df.columns and "valuation_score" in df.columns:
             deep_value_mask = df["dist_52wh"] < -MARKET_REGIMES["bear"]["deep_value_threshold"]
             df.loc[deep_value_mask, "valuation_score"] = _safe_clip(
                 df.loc[deep_value_mask, "valuation_score"] * MARKET_REGIMES["bear"]["boost_value"]
             )
-            # Recompute quality score with boosted valuation using PROFILE weights
+            # Recompute quality score with boosted valuation
             df["quality_score"] = _safe_clip(
-                df["moat_score"] * w["moat"] +
-                df["growth_score"] * w["growth"] +
-                df["cash_score"] * w["cash"] +
-                df["margin_score"] * w["margin"] +
-                df["balance_sheet_score"] * w["balance_sheet"] +
-                df["valuation_score"] * w["valuation"]
+                df["moat_score"] * QUALITY_WEIGHTS["moat"] +
+                df["growth_score"] * QUALITY_WEIGHTS["growth"] +
+                df["cash_score"] * QUALITY_WEIGHTS["cash"] +
+                df["margin_score"] * QUALITY_WEIGHTS["margin"] +
+                df["balance_sheet_score"] * QUALITY_WEIGHTS["balance_sheet"] +
+                df["valuation_score"] * QUALITY_WEIGHTS["valuation"]
             )
             # Reapply mean reversion penalty
             if "mean_reversion_risk" in df.columns:
@@ -723,17 +709,17 @@ def apply_market_regime(df: pd.DataFrame, profile_name: str = "Balanced") -> pd.
 # MASTER SCORING PIPELINE
 # ═══════════════════════════════════════════════════════════════
 
-def run_full_scoring(df: pd.DataFrame, mode: str = "Hybrid", profile: str = "Balanced") -> pd.DataFrame:
-    """Execute the complete 4-layer scoring pipeline with adaptive weights."""
+def run_full_scoring(df: pd.DataFrame) -> pd.DataFrame:
+    """Execute the complete 4-layer scoring pipeline."""
     print("\n" + "="*60)
-    print(f"🏗️  SCORING ENGINE — Mode: {mode} | Profile: {profile}")
+    print("🏗️  SCORING ENGINE — 4-Layer Pipeline")
     print("="*60)
 
     # Layer 1: Hard Gates
     df = apply_hard_gates(df)
 
-    # Layer 2: Quality Score (Dynamic Profile)
-    df = compute_quality_score(df, profile_name=profile)
+    # Layer 2: Quality Score (run on ALL stocks, not just gate-passed)
+    df = compute_quality_score(df)
 
     # Layer 3: Momentum Score
     df = compute_momentum_score(df)
@@ -741,14 +727,14 @@ def run_full_scoring(df: pd.DataFrame, mode: str = "Hybrid", profile: str = "Bal
     # Governance Bonus
     df = compute_governance_bonus(df)
 
-    # QGLP Framework (Motilal Oswal)
+    # QGLP Framekwork (Motilal Oswal)
     df = compute_qglp_score(df)
 
     # Market Regime Adjustments (Wave Detection)
-    df = apply_market_regime(df, profile_name=profile)
+    df = apply_market_regime(df)
 
-    # Layer 4: Composite + Conviction Tier (Dynamic Mode)
-    df = compute_composite_score(df, mode_name=mode)
+    # Layer 4: Composite + Conviction Tier
+    df = compute_composite_score(df)
 
     # Tsunami Detection
     df = detect_tsunami_signals(df)
