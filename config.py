@@ -446,11 +446,55 @@ COLORS = {
     "gradient_end":  "#0f3460",
 }
 
-# Tier-specific colors for the conviction table
-TIER_COLORS = {
-    1: {"bg": "rgba(255,215,0,0.06)",  "border": "rgba(255,215,0,0.3)",  "text": "#FFD700"},
-    2: {"bg": "rgba(63,185,80,0.06)",  "border": "rgba(63,185,80,0.3)",  "text": "#3fb950"},
-    3: {"bg": "rgba(88,166,255,0.06)", "border": "rgba(88,166,255,0.3)", "text": "#58a6ff"},
-    4: {"bg": "rgba(210,153,34,0.06)", "border": "rgba(210,153,34,0.3)", "text": "#d29922"},
-    5: {"bg": "rgba(248,81,73,0.06)",  "border": "rgba(248,81,73,0.3)",  "text": "#f85149"},
+# ═══════════════════════════════════════════════════════════════
+# 11. SYSTEMATIC ALPHA ARCHITECT — MASTER CONFIG
+# ═══════════════════════════════════════════════════════════════
+
+ANALYSIS_MODES = {
+    "Hybrid":      {"quality": 0.55, "momentum": 0.30, "governance": 0.15, "label": "Quantamental (Hybrid)"},
+    "Fundamental": {"quality": 0.85, "momentum": 0.00, "governance": 0.15, "label": "Pure Fundamental"},
+    "Technical":   {"quality": 0.00, "momentum": 0.85, "governance": 0.15, "label": "Pure Technical"},
+}
+
+SCORING_PROFILES = {
+    "Balanced": {
+        "weights": {"moat": 0.22, "growth": 0.22, "cash": 0.20, "margin": 0.13, "balance_sheet": 0.13, "valuation": 0.10},
+        "display_cols": ["rank", "name", "composite_score", "quality_score", "momentum_score", "forensic_label"],
+        "description": "Standard QGLP — Balanced across all quality pillars."
+    },
+    "Value": {
+        "weights": {"moat": 0.15, "growth": 0.10, "cash": 0.20, "margin": 0.10, "balance_sheet": 0.15, "valuation": 0.30},
+        "display_cols": ["rank", "name", "composite_score", "valuation_score", "peg", "pe_discount", "fcf_yield"],
+        "description": "Deep Value — Prioritizes valuation discount and margin of safety."
+    },
+    "Growth": {
+        "weights": {"moat": 0.15, "growth": 0.40, "cash": 0.10, "margin": 0.15, "balance_sheet": 0.10, "valuation": 0.10},
+        "display_cols": ["rank", "name", "composite_score", "growth_score", "pat_gr_5y", "rev_gr_5y", "eps_gr_5y"],
+        "description": "Aggressive Growth — Prioritizes revenue and PAT acceleration."
+    },
+    "Quality": {
+        "weights": {"moat": 0.40, "growth": 0.15, "cash": 0.20, "margin": 0.15, "balance_sheet": 0.10, "valuation": 0.00},
+        "display_cols": ["rank", "name", "composite_score", "moat_score", "roce_med_10y", "roe_med_10y", "cfo_to_pat"],
+        "description": "Buffett Style — 100% focus on ROCE, Moat, and Cash Quality."
+    },
+    "Momentum": {
+        "weights": {"moat": 0.10, "growth": 0.20, "cash": 0.10, "margin": 0.10, "balance_sheet": 0.10, "valuation": 0.40},
+        "display_cols": ["rank", "name", "composite_score", "momentum_score", "crs_50d", "rs_rating", "breakout_proximity"],
+        "description": "Trend Following — Prioritizes price/volume strength and earnings breakouts."
+    },
+    "GARP": {
+        "weights": {"moat": 0.20, "growth": 0.30, "cash": 0.15, "margin": 0.10, "balance_sheet": 0.10, "valuation": 0.15},
+        "display_cols": ["rank", "name", "composite_score", "growth_score", "valuation_score", "peg", "pat_gr_5y"],
+        "description": "Growth at Reasonable Price — Balances growth potential with entry discipline."
+    },
+    "Turnaround": {
+        "weights": {"moat": 0.10, "growth": 0.30, "cash": 0.10, "margin": 0.10, "balance_sheet": 0.30, "valuation": 0.10},
+        "display_cols": ["rank", "name", "composite_score", "balance_sheet_score", "debt_slope_3y", "pat_acceleration", "reserves_growth"],
+        "description": "Special Situations — Focuses on deleveraging and profitability inflections."
+    },
+    "Defensive": {
+        "weights": {"moat": 0.25, "growth": 0.05, "cash": 0.35, "margin": 0.15, "balance_sheet": 0.20, "valuation": 0.00},
+        "display_cols": ["rank", "name", "composite_score", "cash_score", "fcf_yield", "debt_to_equity", "current_ratio"],
+        "description": "Capital Preservation — Focuses on FCF yield and fortress balance sheets."
+    },
 }
