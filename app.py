@@ -45,7 +45,7 @@ inject_css()
 
 # Data Source UI
 if "data_source" not in st.session_state:
-    st.session_state.data_source = "local"
+    st.session_state.data_source = "sheet"
 
 with st.sidebar:
     render_sidebar_brand()
@@ -84,8 +84,6 @@ with st.sidebar:
             
             if len(uploaded_dict) >= 1: 
                 data_ready = True
-    else:
-        data_ready = True
 
 if not data_ready:
     st.info("👋 Welcome! Please select a data source from the sidebar (Google Sheets or Upload CSV) to begin scanning.")
