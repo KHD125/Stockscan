@@ -448,47 +448,42 @@ with tabs[6]:
 # TAB 8: CONFIGURATION
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 with tabs[7]:
-    st.markdown(f"<div class='sec-head'>⚙️ System Configuration</div>", unsafe_allow_html=True)
-    st.markdown(f"<div class='sec-cap'>Current scoring weights and gate thresholds. Modify config.py to adjust.</div>", unsafe_allow_html=True)
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**Composite Blend Weights**")
-        for k, v in COMPOSITE_WEIGHTS.items():
-            st.markdown(f"- {k.title()}: **{v*100:.0f}%**")
-        st.markdown("**Quality Sub-Weights (6 Layers)**")
-        for k, v in QUALITY_WEIGHTS.items():
-            src = {"moat": "SQGLP", "growth": "SQGLP", "cash": "Coffee Can",
-                   "margin": "Fisher", "balance_sheet": "Baid", "valuation": "Marks+Baid"}
-            st.markdown(f"- {k.replace('_',' ').title()} ({src.get(k,'')}): **{v*100:.0f}%**")
-    with c2:
-        st.markdown("**Hard Gates (7 Frameworks)**")
-        for name, cfg in HARD_GATES.items():
-            st.markdown(f"- {cfg['description']}")
-        st.markdown("**Momentum Sub-Weights (CAN-SLIM)**")
-        for k, v in MOMENTUM_WEIGHTS.items():
-            st.markdown(f"- {k.replace('_',' ').title()}: **{v*100:.0f}%**")
-
-    # ── ACTIVE PROFILE WEIGHTS ──
-    st.markdown("---")
-    st.markdown(f"<div class='sec-head'>🧬 Active Strategy: {sel_profile} ({sel_mode})</div>", unsafe_allow_html=True)
+    # ── ACTIVE STRATEGY DNA (Moved to top for better UX) ──
+    st.markdown(f"<div class='sec-head'>🧬 Active Strategy DNA: {sel_profile} ({sel_mode})</div>", unsafe_allow_html=True)
     
     prof_cfg = SCORING_PROFILES[sel_profile]
     mode_cfg = ANALYSIS_MODES[sel_mode]
     
-    st.markdown(f"**Strategy Description:** {prof_cfg['description']}")
+    st.markdown(f"<div class='sec-cap'>{prof_cfg['description']}</div>", unsafe_allow_html=True)
     
     wc1, wc2 = st.columns(2)
     with wc1:
-        st.markdown("**1. Fundamental Weights (Layer 2)**")
+        st.markdown("**1. Fundamental Weight Matrix (Layer 2)**")
+        # Visual weight bars
         for k, v in prof_cfg["weights"].items():
             if v > 0:
-                st.markdown(f"- {k.title()}: **{v*100:.0f}%**")
+                st.markdown(f"- {k.title().replace('_',' ')}")
+                st.progress(v)
     with wc2:
-        st.markdown("**2. Composite Blend (Layer 4)**")
+        st.markdown("**2. System Blend Logic (Layer 4)**")
         for k, v in mode_cfg.items():
             if isinstance(v, float) and v > 0:
-                st.markdown(f"- {k.title()}: **{v*100:.0f}%**")
+                st.markdown(f"- {k.title()}")
+                st.progress(v)
+
+    st.markdown("---")
+    st.markdown(f"<div class='sec-head'>⚙️ Global Gate Thresholds</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='sec-cap'>Hard constraints applied to all stocks before scoring.</div>", unsafe_allow_html=True)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Hard Gates (7 Master Frameworks)**")
+        for name, cfg in HARD_GATES.items():
+            st.markdown(f"- {cfg['description']}")
+    with c2:
+        st.markdown("**Momentum Sub-Weights (CAN-SLIM)**")
+        for k, v in MOMENTUM_WEIGHTS.items():
+            st.markdown(f"- {k.replace('_',' ').title()}: **{v*100:.0f}%**")
 
     # ── BAID SELL TRIGGERS INFO ──
     st.markdown("---")
