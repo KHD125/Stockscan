@@ -154,10 +154,32 @@ def inject_css():
     div[data-testid="stDataFrame"] > div {{ border-radius: 10px; overflow: hidden; }}
 
     /* ── Tabs ── */
-    .stTabs [data-baseweb="tab-list"] {{ gap: 4px; }}
+    .stTabs [data-baseweb="tab-list"] {{
+        gap: 4px;
+        background: {COLORS['bg_secondary']};
+        border-radius: 12px 12px 0 0;
+        padding: 6px 6px 0 6px;
+        border-bottom: 2px solid {COLORS['border']};
+    }}
     .stTabs [data-baseweb="tab"] {{
-        padding: 10px 20px; font-weight: 600; border-radius: 10px 10px 0 0;
+        padding: 10px 20px;
+        font-weight: 600;
+        border-radius: 10px 10px 0 0;
         font-size: 0.85rem;
+        color: {COLORS['text_secondary']} !important;
+        background: transparent;
+        border: 1px solid transparent;
+        transition: all 0.2s ease;
+    }}
+    .stTabs [data-baseweb="tab"]:hover {{
+        color: {COLORS['text_primary']} !important;
+        background: rgba(255,255,255,0.05);
+    }}
+    .stTabs [aria-selected="true"] {{
+        color: {COLORS['gold']} !important;
+        background: rgba(228,179,65,0.08) !important;
+        border-color: rgba(228,179,65,0.3) !important;
+        border-bottom-color: transparent !important;
     }}
 
     /* ── Sidebar ── */
