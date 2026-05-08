@@ -505,15 +505,17 @@ def compute_derived_signals(df: pd.DataFrame) -> pd.DataFrame:
         default="⚪ Neutral"
     )
 
-    # ── MARKET CAP TIER ──
+    # ── MARKET CAP TIER (mirrors Google Sheet ARRAYFORMULA exactly) ──
     df["mcap_tier"] = np.select(
         [
-            df["market_cap"] >= MCAP_TIERS["Tier A"]["min"],
-            df["market_cap"] >= MCAP_TIERS["Tier B"]["min"],
-            df["market_cap"] >= MCAP_MIN_FLOOR,
+            df["market_cap"] >= 200_000,
+            df["market_cap"] >= 20_000,
+            df["market_cap"] >= 5_000,
+            df["market_cap"] >= 500,
+            df["market_cap"] >= 100,
         ],
-        ["Tier A", "Tier B", "Tier C"],
-        default="Below Floor"
+        ["Mega Cap", "Large Cap", "Mid Cap", "Small Cap", "Micro Cap"],
+        default="Nano Cap"
     )
 
     # ── FINANCIAL SECTOR FLAG ──
