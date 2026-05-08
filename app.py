@@ -197,7 +197,7 @@ with tabs[0]:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 with tabs[1]:
     st.markdown(f"<div class='sec-head'>🔍 Deep Scanner — {len(filt)} Stocks</div>", unsafe_allow_html=True)
-    display_cols = ["rank","name","sector","industry","mcap_tier","market_cap","composite_score",
+    display_cols = ["rank","name","sector","industry","market_category","market_cap","composite_score",
                     "quality_score","valuation_score","moat_score","growth_score","cash_score","momentum_score",
                     "governance_bonus","piotroski_fscore","forensic_label","tier_label",
                     "mean_reversion_risk","sell_alert_any",
@@ -346,7 +346,7 @@ with tabs[4]:
                             🌊 {row['name']}
                         </div>
                         <div style="font-size:0.75rem; color:#A8A3D8; margin-top:2px;">
-                            {row.get('sector','')} · ₹{row.get('market_cap',0):,.0f} Cr · {row.get('mcap_tier','')}
+                            {row.get('sector','')} · ₹{row.get('market_cap',0):,.0f} Cr · {row.get('market_category','')}
                         </div>
                     </div>
                     <div style="font-size:2rem; font-weight:900; color:#FFD700;">{row['composite_score']:.0f}</div>
