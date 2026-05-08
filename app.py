@@ -26,26 +26,17 @@ from ui_components import (inject_css, render_hero_banner, render_metric_strip,
 from config import (COLORS, TIER_COLORS, CONVICTION_TIERS, UI, HARD_GATES,
                     QUALITY_WEIGHTS, MOMENTUM_WEIGHTS, COMPOSITE_WEIGHTS,
                     VALUATION_SIGNALS, MARKS_CYCLE, DEFAULT_CYCLE_TEMPERATURE,
-                    BAID_SELL_TRIGGERS, MEAN_REVERSION, PEG_ZONES,
-                    ANALYSIS_MODES, SCORING_PROFILES)
+                    BAID_SELL_TRIGGERS, MEAN_REVERSION, PEG_ZONES)
 
 
 # ═══════════════════════════════════════════════════════════════
-# DATA LOADING (cached - Stage 1)
+# DATA LOADING (cached)
 # ═══════════════════════════════════════════════════════════════
 @st.cache_data(show_spinner=False)
-def get_raw_master(data_source="local", uploaded_files=None, sheet_id=None):
-    """Downloads and merges CSVs. Heavy lifting only."""
-    return build_master_dataframe(data_source, uploaded_files, sheet_id)
-
-# ═══════════════════════════════════════════════════════════════
-# SCORING ENGINE (cached - Stage 2)
-# ═══════════════════════════════════════════════════════════════
-@st.cache_data(show_spinner=False)
-def run_scoring_pipeline(raw_df, mode="Hybrid", profile="Balanced"):
-    """Applies dynamic scoring logic. Fast vectorized math."""
+def load_and_score(data_source="local", uploaded_files=None, sheet_id=None):
     t0 = time.time()
-    df = run_full_scoring(raw_df, mode=mode, profile=profile)
+    df = build_master_dataframe(data_source, uploaded_files, sheet_id)
+    df = run_full_scoring(df)
     df = run_forensic_analysis(df)
     elapsed = time.time() - t0
     return df, elapsed
@@ -73,10 +64,6 @@ with st.sidebar:
     if st.button("🔄 Clear Cache & Reload", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
-
-    st.markdown("### 🎯 System Setup")
-    sel_mode = st.selectbox("Analysis Mode", list(ANALYSIS_MODES.keys()), index=0, help="Fundamental vs Technical vs Hybrid balance")
-    sel_profile = st.selectbox("Scoring Profile", list(SCORING_PROFILES.keys()), index=0, help="Specific master framework to apply")
 
     sheet_id = None
     uploaded_dict = None
@@ -106,18 +93,11 @@ if not data_ready:
     st.info("👋 Welcome! Please select a data source from the sidebar (Google Sheets or Upload CSV) to begin scanning.")
     st.stop()
 
-with st.spinner("🔄 Synchronizing data engine..."):
+with st.spinner("🔄 Loading & scoring 2,100+ stocks..."):
     try:
-        raw_df = get_raw_master(st.session_state.data_source, uploaded_dict, sheet_id)
+        df, load_time = load_and_score(st.session_state.data_source, uploaded_dict, sheet_id)
     except Exception as e:
-        st.error(f"❌ Error fetching data: {e}")
-        st.stop()
-
-with st.spinner(f"🧮 Running {sel_profile} scan..."):
-    try:
-        df, load_time = run_scoring_pipeline(raw_df, mode=sel_mode, profile=sel_profile)
-    except Exception as e:
-        st.error(f"❌ Scoring error: {e}")
+        st.error(f"❌ Error loading data: {e}")
         st.stop()
 
 # Key metrics
@@ -221,15 +201,14 @@ with tabs[0]:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 with tabs[1]:
     st.markdown(f"<div class='sec-head'>🔍 Deep Scanner — {len(filt)} Stocks</div>", unsafe_allow_html=True)
-    
-    # Dynamic columns based on profile
-    profile_cfg = SCORING_PROFILES.get(sel_profile, SCORING_PROFILES["Balanced"])
-    base_cols = profile_cfg["display_cols"]
-    
-    # Add forensic/gate columns if not present
-    full_cols = base_cols + [c for c in ["forensic_label", "gate_pass", "roe_med_10y", "roce_med_10y", "debt_to_equity", "peg", "pledged_percentage"] if c not in base_cols]
-    
-    available = [c for c in full_cols if c in filt.columns]
+    display_cols = ["rank","name","sector","industry","market_category","market_cap","composite_score",
+                    "quality_score","valuation_score","moat_score","growth_score","cash_score","momentum_score",
+                    "governance_bonus","piotroski_fscore","forensic_label","tier_label",
+                    "mean_reversion_risk","sell_alert_any",
+                    "gate_pass","gates_failed","close_price","roe_med_10y","roce_med_10y",
+                    "cfo_to_pat","pat_gr_5y","rev_gr_5y","debt_to_equity","peg","pledged_percentage",
+                    "promoter_holdings","crs_50d","ret_vs_industry_1y"]
+    available = [c for c in display_cols if c in filt.columns]
     st.dataframe(
         filt[available].reset_index(drop=True),
         use_container_width=True, height=600,
@@ -448,42 +427,64 @@ with tabs[6]:
 # TAB 8: CONFIGURATION
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 with tabs[7]:
-    # ── ACTIVE STRATEGY DNA (Moved to top for better UX) ──
-    st.markdown(f"<div class='sec-head'>🧬 Active Strategy DNA: {sel_profile} ({sel_mode})</div>", unsafe_allow_html=True)
-    
-    prof_cfg = SCORING_PROFILES[sel_profile]
-    mode_cfg = ANALYSIS_MODES[sel_mode]
-    
-    st.markdown(f"<div class='sec-cap'>{prof_cfg['description']}</div>", unsafe_allow_html=True)
-    
-    wc1, wc2 = st.columns(2)
-    with wc1:
-        st.markdown("**1. Fundamental Weight Matrix (Layer 2)**")
-        # Visual weight bars
-        for k, v in prof_cfg["weights"].items():
-            if v > 0:
-                st.markdown(f"- {k.title().replace('_',' ')}")
-                st.progress(v)
-    with wc2:
-        st.markdown("**2. System Blend Logic (Layer 4)**")
-        for k, v in mode_cfg.items():
-            if isinstance(v, float) and v > 0:
-                st.markdown(f"- {k.title()}")
-                st.progress(v)
-
-    st.markdown("---")
-    st.markdown(f"<div class='sec-head'>⚙️ Global Gate Thresholds</div>", unsafe_allow_html=True)
-    st.markdown(f"<div class='sec-cap'>Hard constraints applied to all stocks before scoring.</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='sec-head'>⚙️ System Configuration</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='sec-cap'>Current scoring weights and gate thresholds. Modify config.py to adjust.</div>", unsafe_allow_html=True)
 
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("**Hard Gates (7 Master Frameworks)**")
+        st.markdown("**Composite Blend Weights**")
+        for k, v in COMPOSITE_WEIGHTS.items():
+            st.markdown(f"- {k.title()}: **{v*100:.0f}%**")
+        st.markdown("**Quality Sub-Weights (6 Layers)**")
+        for k, v in QUALITY_WEIGHTS.items():
+            src = {"moat": "SQGLP", "growth": "SQGLP", "cash": "Coffee Can",
+                   "margin": "Fisher", "balance_sheet": "Baid", "valuation": "Marks+Baid"}
+            st.markdown(f"- {k.replace('_',' ').title()} ({src.get(k,'')}): **{v*100:.0f}%**")
+    with c2:
+        st.markdown("**Hard Gates (7 Frameworks)**")
         for name, cfg in HARD_GATES.items():
             st.markdown(f"- {cfg['description']}")
-    with c2:
         st.markdown("**Momentum Sub-Weights (CAN-SLIM)**")
         for k, v in MOMENTUM_WEIGHTS.items():
             st.markdown(f"- {k.replace('_',' ').title()}: **{v*100:.0f}%**")
+
+    # ── MARKS CYCLE TEMPERATURE GAUGE ──
+    st.markdown("---")
+    st.markdown(f"<div class='sec-head'>🌡️ Marks Cycle Temperature Gauge</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='sec-cap'>Howard Marks' 5-Dimension Market Cycle Assessment. "
+                f"Score each dimension 1 (cold/fear) to 5 (hot/greed). Total 5-25.</div>", unsafe_allow_html=True)
+
+    tc1, tc2 = st.columns(2)
+    with tc1:
+        t_val = st.slider("📊 Valuations (1=PE<17, 5=PE>25)", 1, 5,
+                          DEFAULT_CYCLE_TEMPERATURE["valuations"], key="ct_val")
+        t_credit = st.slider("🏦 Credit Conditions (1=tight, 5=loose)", 1, 5,
+                             DEFAULT_CYCLE_TEMPERATURE["credit_conditions"], key="ct_credit")
+        t_psych = st.slider("🧠 Investor Psychology (1=fear, 5=greed)", 1, 5,
+                            DEFAULT_CYCLE_TEMPERATURE["investor_psychology"], key="ct_psych")
+    with tc2:
+        t_cap = st.slider("📈 Capital Markets (1=no IPOs, 5=IPO mania)", 1, 5,
+                          DEFAULT_CYCLE_TEMPERATURE["capital_markets"], key="ct_cap")
+        t_qual = st.slider("⚖️ Market Quality (1=quality leads, 5=junk leads)", 1, 5,
+                           DEFAULT_CYCLE_TEMPERATURE["market_quality"], key="ct_qual")
+
+    cycle_total = t_val + t_credit + t_psych + t_cap + t_qual
+    if cycle_total <= MARKS_CYCLE["posture_aggressive"]["max_score"]:
+        posture = MARKS_CYCLE["posture_aggressive"]
+    elif cycle_total <= MARKS_CYCLE["posture_neutral"]["max_score"]:
+        posture = MARKS_CYCLE["posture_neutral"]
+    else:
+        posture = MARKS_CYCLE["posture_defensive"]
+
+    posture_color = "#3fb950" if "Aggressive" in posture["label"] else "#d29922" if "Neutral" in posture["label"] else "#f85149"
+    st.markdown(f"""
+    <div style="background:{COLORS['bg_secondary']}; border:2px solid {posture_color};
+                border-radius:12px; padding:20px; margin:10px 0; text-align:center;">
+        <div style="font-size:2.5rem; font-weight:900; color:{posture_color};">{cycle_total}/25</div>
+        <div style="font-size:1.3rem; font-weight:700; color:{posture_color}; margin-top:4px;">{posture["label"]}</div>
+        <div style="font-size:0.85rem; color:{COLORS['text_muted']}; margin-top:8px;">{posture["action"]}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
     # ── BAID SELL TRIGGERS INFO ──
     st.markdown("---")
@@ -503,9 +504,9 @@ with tabs[7]:
     st.markdown("---")
     st.markdown(f"""
     <div style="text-align:center; padding:20px; color:{COLORS['text_muted']}; font-size:0.75rem;">
-        Multibagger Discovery System v{UI['version']} · 8 Master Profiles Fused<br>
+        Multibagger Discovery System v{UI['version']} · 7 Frameworks Fused<br>
         SQGLP + Coffee Can + Fisher + CAN-SLIM + Forensic Shenanigans + Howard Marks + Compounding Codex<br>
-        {len(df)} stocks scanned · {len(df.columns)} signals processed · {load_time:.2f}s execution<br>
-        <strong>Strategy: {sel_profile} Profile | {sel_mode} Mode</strong>
+        {total} stocks · {len(df.columns)} signals · {load_time:.1f}s pipeline<br>
+        <strong>Marks Cycle Posture: {posture['label']}</strong>
     </div>
     """, unsafe_allow_html=True)
