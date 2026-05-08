@@ -516,8 +516,8 @@ def compute_governance_bonus(df: pd.DataFrame) -> pd.DataFrame:
         bonus += (df["pledge_falling_1y"] > 0).astype(float) * GOVERNANCE_BONUS["pledge_falling_1y"]
 
     # Undiscovered alpha: low FII + Tier C
-    if "fii_holdings" in df.columns and "mcap_tier" in df.columns:
-        undiscovered = (df["fii_holdings"] < 5) & (df["mcap_tier"] == "Tier C")
+    if "fii_holdings" in df.columns and "market_cap" in df.columns:
+        undiscovered = (df["fii_holdings"] < 5) & (df["market_cap"] < 5000)
         bonus += undiscovered.astype(float) * GOVERNANCE_BONUS["undiscovered_alpha"]
 
     df["governance_bonus"] = _safe_clip(bonus)
@@ -588,7 +588,7 @@ def detect_tsunami_signals(df: pd.DataFrame) -> pd.DataFrame:
 
     # Tsunami with Tier C (undiscovered) is the ultimate signal
     df["tsunami_undiscovered"] = (
-        tsunami_conditions & (df["mcap_tier"] == "Tier C")
+        tsunami_conditions & (df["market_cap"] < 5000)
     ).astype(int)
 
     count = df["tsunami_signal"].sum()
