@@ -348,10 +348,32 @@ def compute_derived_signals(df: pd.DataFrame) -> pd.DataFrame:
     )
     df["ev_compression"] = df["ev_ebitda_1yb"] - df["ev_ebitda"]
     df["de_slope_3y"] = df["debt_to_equity"] - df["debt_to_equity_3yb"]
-    df["dilution_flag"] = np.where(
-        df["equity_shares"].notna() & df["equity_shares_1yb"].notna(),
-        (df["equity_shares"] > df["equity_shares_1yb"]).astype(int),
-        0
+    # ── DILUTION: Percentage-based materiality (Fisher Point 13) ──
+    # OLD APPROACH (BUG): Binary flag — any share increase = fail.
+    #   This incorrectly killed companies for tiny ESOPs (0.1-0.5% dilution).
+    # NEW APPROACH (SMART): 4-Tier materiality system:
+    #   Tier 0: Stable / Buyback (≤0%)        → dilution_flag = 0 (Clean)
+    #   Tier 1: ESOP-level    (0% to 3%)       → dilution_flag = 1 (Minor — Watch)
+    #   Tier 2: Meaningful    (3% to 10%)      → dilution_flag = 2 (Caution — Penalty)
+    #   Tier 3: Predatory QIP (>10%)           → dilution_flag = 3 (Hard Reject)
+    # The Hard Gate in config.py is now updated to reject ONLY Tier 3 (>10%).
+    shares_valid = df["equity_shares"].notna() & df["equity_shares_1yb"].notna() & (df["equity_shares_1yb"] > 0)
+
+    df["dilution_pct"] = np.where(
+        shares_valid,
+        (df["equity_shares"] - df["equity_shares_1yb"]) / df["equity_shares_1yb"] * 100,
+        0.0  # no data = benefit of doubt
+    )
+
+    df["dilution_flag"] = np.select(
+        [
+            ~shares_valid,                          # No data → benefit of doubt
+            df["dilution_pct"] <= 0,                # Stable or buyback → perfectly clean
+            df["dilution_pct"] <= 3.0,              # ≤3% → ESOP/minor → Watch tier
+            df["dilution_pct"] <= 10.0,             # 3-10% → Meaningful → Caution tier
+        ],
+        [0, 0, 1, 2],
+        default=3                                   # >10% → Predatory QIP → Hard Reject
     )
 
     # ── INCOME DERIVED ──
