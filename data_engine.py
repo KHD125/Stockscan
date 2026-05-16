@@ -221,8 +221,15 @@ def extract_spreadsheet_id(url_or_id: str) -> str:
 
 def _load_single_csv(filepath: str, col_map: Dict[str, str], sheet_name: str) -> pd.DataFrame:
     """Load a single CSV, apply column mapping, and return clean DataFrame."""
-    # Row 0 = section headers (emojis), Row 1 = actual column names
-    df = pd.read_csv(filepath, header=1, low_memory=False)
+    # Row 0 = emoji section headers, Row 1 = actual column names
+    # na_values covers: 'null', 'NULL', 'None', 'N/A', 'n/a', '#N/A', empty string
+    df = pd.read_csv(
+        filepath,
+        header=1,
+        low_memory=False,
+        na_values=["null", "NULL", "None", "N/A", "n/a", "#N/A", "#VALUE!", "#REF!", ""],
+        keep_default_na=True,
+    )
 
     # Build the full mapping: common + sheet-specific
     full_map = {**COMMON_COLS, **col_map}
@@ -530,22 +537,24 @@ def compute_derived_signals(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_master_dataframe(data_source: str = "local", uploaded_files: dict = None, sheet_id: str = None) -> pd.DataFrame:
-    """Complete pipeline: Load → Merge → Coerce → Derive → Return."""
+def fetch_and_clean_data(data_source: str = "local", uploaded_files: dict = None, sheet_id: str = None) -> pd.DataFrame:
+    """Tier-1 Cache: Load → Merge → Coerce → Derive → Return clean master DataFrame.
+    This is the expensive operation (network/IO). Cache it aggressively.
+    The scoring engine runs separately and is NOT cached — enabling instant re-scoring.
+    """
     datasets = load_all_csvs(data_source=data_source, uploaded_files=uploaded_files, sheet_id=sheet_id)
     master = merge_datasets(datasets)
     master = coerce_numeric_columns(master)
     master = compute_derived_signals(master)
 
-    # Filter out stocks below minimum market cap floor
-    before = len(master)
-    master = master[master["market_cap"] >= MCAP_MIN_FLOOR].reset_index(drop=True)
-    filtered = before - len(master)
-    if filtered > 0:
-        print(f"\n🚫 Filtered {filtered} stocks below ₹{MCAP_MIN_FLOOR} Cr market cap floor")
-
-    print(f"\n✅ Master DataFrame ready: {len(master)} stocks × {len(master.columns)} columns")
+    # No market cap floor filter — all 2107 stocks included.
+    # market_category from the sheet already handles classification.
+    print(f"\n✅ Clean data ready: {len(master)} stocks × {len(master.columns)} columns")
     return master
+
+
+# Backward-compat alias
+build_master_dataframe = fetch_and_clean_data
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -554,11 +563,11 @@ def build_master_dataframe(data_source: str = "local", uploaded_files: dict = No
 if __name__ == "__main__":
     import time
     t0 = time.time()
-    df = build_master_dataframe()
+    df = fetch_and_clean_data()
     elapsed = time.time() - t0
     print(f"\n⏱️  Pipeline completed in {elapsed:.2f}s")
     print(f"\nSample columns: {list(df.columns[:20])}")
-    print(f"\nTier distribution:\n{df['mcap_tier'].value_counts()}")
+    print(f"\nMarket category dist:\n{df['market_category'].value_counts()}")
     print(f"\nFinancial sector: {df['is_financial'].sum()} stocks")
     print(f"\nNaN counts (top 10):")
     nan_counts = df.isnull().sum().sort_values(ascending=False).head(10)
