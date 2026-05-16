@@ -106,6 +106,22 @@ def apply_hard_gates(df: pd.DataFrame) -> pd.DataFrame:
                 gate_results[relaxed_gate] = gate_results[relaxed_gate] | fin_mask
                 df[f"gate_{relaxed_gate}"] = gate_results[relaxed_gate].astype(int)
 
+    # ── ALPHA VECTOR: TURNAROUND DELTA (Rate of Change Override) ──
+    # Peter Lynch Turnarounds: Do not punish a company getting radically better just because it misses absolute thresholds.
+    if "debt_safety" in gate_results and "de_slope_3y" in df.columns:
+        # Override Debt Gate if they are aggressively deleveraging (D/E dropped by > 0.15)
+        deleveraging_mask = df["de_slope_3y"].fillna(0) < -0.15
+        gate_results["debt_safety"] = gate_results["debt_safety"] | deleveraging_mask
+        df["gate_debt_safety"] = gate_results["debt_safety"].astype(int)
+
+    if "return_on_capital" in gate_results and "roce" in df.columns:
+        # Approximate historical ROCE (we don't explicitly have roce_3yb, but we have 5y_med and 10y_med)
+        # If current ROCE > 5y median + 3%, they are breaking out fundamentally.
+        if "roce_med_5y" in df.columns:
+            margin_expansion_mask = (df["roce"] - df["roce_med_5y"]) > 3.0
+            gate_results["return_on_capital"] = gate_results["return_on_capital"] | margin_expansion_mask
+            df["gate_return_on_capital"] = gate_results["return_on_capital"].astype(int)
+
     # Overall pass: must pass ALL gates
     all_gates = pd.DataFrame(gate_results)
     df["gate_pass"] = all_gates.all(axis=1).astype(int)
