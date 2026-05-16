@@ -21,7 +21,7 @@ from config import (
     MCAP_TIERS, MCAP_MIN_FLOOR,
     VALUATION_SIGNALS, PEG_ZONES, MEAN_REVERSION, BAID_SELL_TRIGGERS,
     DEFAULT_CYCLE_TEMPERATURE, MARKS_CYCLE,
-    QGLP_FRAMEWORK, WAVE_DETECTION, MARKET_REGIMES
+    MASTER_PROFILES, ANALYSIS_MODES, WAVE_DETECTION, MARKET_REGIMES
 )
 
 
@@ -528,16 +528,31 @@ def compute_governance_bonus(df: pd.DataFrame) -> pd.DataFrame:
 # LAYER 4: COMPOSITE + CONVICTION TIER
 # ═══════════════════════════════════════════════════════════════
 
-def compute_composite_score(df: pd.DataFrame) -> pd.DataFrame:
-    """Final composite score and conviction tier assignment."""
+def compute_composite_score(
+    df: pd.DataFrame,
+    fundamental_w: float = 0.70,
+    momentum_w: float = 0.30
+) -> pd.DataFrame:
+    """Final composite score and conviction tier assignment.
+    
+    Args:
+        fundamental_w: Weight for quality/fundamental score (Analysis Mode)
+        momentum_w: Weight for momentum score (Analysis Mode)
+    """
     df = df.copy()
 
-    df["composite_score"] = (
-        df["quality_score"] * COMPOSITE_WEIGHTS["quality"] +
-        df["momentum_score"] * COMPOSITE_WEIGHTS["momentum"] +
-        df["governance_bonus"] * COMPOSITE_WEIGHTS["governance"]
-    )
+    # Governance is always blended at 10% regardless of mode
+    gov_w = COMPOSITE_WEIGHTS.get("governance", 0.10)
+    # Normalize fundamental + momentum to fill remaining 90%
+    scale = 1.0 - gov_w
+    fund_scaled = fundamental_w * scale
+    mom_scaled  = momentum_w  * scale
 
+    df["composite_score"] = (
+        df["quality_score"]   * fund_scaled +
+        df["momentum_score"]  * mom_scaled +
+        df["governance_bonus"] * gov_w
+    )
     df["composite_score"] = _safe_clip(df["composite_score"])
 
     # Assign conviction tiers
@@ -555,7 +570,6 @@ def compute_composite_score(df: pd.DataFrame) -> pd.DataFrame:
         {t["tier"]: t["emoji"] for t in CONVICTION_TIERS}
     )
 
-    # Print distribution
     print(f"\n🏆 Composite Score: mean={df['composite_score'].mean():.1f}, "
           f"median={df['composite_score'].median():.1f}")
     print("\nConviction Tier Distribution:")
@@ -564,6 +578,7 @@ def compute_composite_score(df: pd.DataFrame) -> pd.DataFrame:
         print(f"  {tier['emoji']} Tier {tier['tier']} ({tier['label']}): {count} stocks")
 
     return df
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -602,11 +617,13 @@ def detect_tsunami_signals(df: pd.DataFrame) -> pd.DataFrame:
 # MOTILAL OSWAL QGLP FRAMEWORK
 # ═══════════════════════════════════════════════════════════════
 
-def compute_qglp_score(df: pd.DataFrame) -> pd.DataFrame:
-    """Motilal Oswal QGLP Framework (Quality, Growth, Longevity, Price)."""
+def compute_qglp_score(df: pd.DataFrame, profile: dict = None) -> pd.DataFrame:
+    """Motilal Oswal QGLP Framework — weights driven by selected Scoring Profile."""
     df = df.copy()
+    if profile is None:
+        profile = MASTER_PROFILES["Balanced"]
 
-    # Q: Quality (ROCE > 15%, Mgmt Quality)
+    # Q: Quality (ROCE rank + management quality)
     q_score = _pct_rank(df.get("roce", pd.Series(0, index=df.index)), ascending=True).fillna(50) * 0.7
     if "promoter_buying" in df.columns:
         q_score += df["promoter_buying"] * 10
@@ -614,15 +631,15 @@ def compute_qglp_score(df: pd.DataFrame) -> pd.DataFrame:
         q_score -= df["pledge_rising"] * 10
     q_score = _safe_clip(q_score)
 
-    # G: Growth (PAT/EPS Growth > 15%)
+    # G: Growth (PAT + EPS CAGR)
     g_score = _pct_rank(df.get("pat_gr_5y", pd.Series(0, index=df.index)), ascending=True).fillna(50) * 0.5 + \
               _pct_rank(df.get("eps_gr_5y", pd.Series(0, index=df.index)), ascending=True).fillna(50) * 0.5
     g_score = _safe_clip(g_score)
-    
+
     # L: Longevity (ROE Consistency 10Y)
     l_score = _pct_rank(df.get("roe_med_10y", pd.Series(0, index=df.index)), ascending=True).fillna(50)
-    
-    # P: Price (PEG < 1.5)
+
+    # P: Price (PEG zone score)
     if "peg" in df.columns:
         p_score = _zone_score(df["peg"].clip(lower=0), PEG_ZONES).fillna(50)
     else:
@@ -633,22 +650,26 @@ def compute_qglp_score(df: pd.DataFrame) -> pd.DataFrame:
     df["qglp_longevity"] = l_score
     df["qglp_price"] = p_score
 
-    df["qglp_score"] = (
-        q_score * QGLP_FRAMEWORK["quality_weight"] +
-        g_score * QGLP_FRAMEWORK["growth_weight"] +
-        l_score * QGLP_FRAMEWORK["longevity_weight"] +
-        p_score * QGLP_FRAMEWORK["price_weight"]
+    # Apply profile-driven QGLP weights
+    df["qglp_score"] = _safe_clip(
+        q_score * profile["quality_w"] +
+        g_score * profile["growth_w"] +
+        l_score * profile["longevity_w"] +
+        p_score * profile["price_w"]
     )
-    df["qglp_score"] = _safe_clip(df["qglp_score"])
-    
-    # Hard Gates for QGLP pass
+
+    # Profile-driven hard gates for QGLP pass
+    roce_gate  = profile.get("roce_gate", 15.0)
+    growth_gate = profile.get("growth_gate", 15.0)
+    peg_gate   = profile.get("peg_gate", 1.5)
+
     df["qglp_pass"] = (
-        (df.get("roce", 0) >= QGLP_FRAMEWORK["roce_hard_gate"]) &
-        (df.get("pat_gr_5y", 0) >= QGLP_FRAMEWORK["growth_gate"]) &
-        (df.get("peg", 999) <= QGLP_FRAMEWORK["peg_gate"]) &
-        (df.get("peg", -1) >= 0)
+        (df.get("roce", pd.Series(0, index=df.index)).fillna(0) >= roce_gate) &
+        (df.get("pat_gr_5y", pd.Series(0, index=df.index)).fillna(0) >= growth_gate) &
+        (df.get("peg", pd.Series(999, index=df.index)).fillna(999) <= peg_gate) &
+        (df.get("peg", pd.Series(-1, index=df.index)).fillna(-1) >= 0)
     ).astype(int)
-    
+
     return df
 
 
@@ -709,16 +730,30 @@ def apply_market_regime(df: pd.DataFrame) -> pd.DataFrame:
 # MASTER SCORING PIPELINE
 # ═══════════════════════════════════════════════════════════════
 
-def run_full_scoring(df: pd.DataFrame) -> pd.DataFrame:
-    """Execute the complete 4-layer scoring pipeline."""
+def run_full_scoring(
+    df: pd.DataFrame,
+    analysis_mode: str = "Hybrid",
+    scoring_profile: str = "Balanced"
+) -> pd.DataFrame:
+    """Execute the complete 4-layer adaptive scoring pipeline.
+    
+    Args:
+        df: Clean master DataFrame from fetch_and_clean_data()
+        analysis_mode: 'Hybrid' | 'Fundamental' | 'Technical'
+        scoring_profile: One of the 8 MASTER_PROFILES keys
+    """
+    # Look up profile + mode from Policy Engine (config factory)
+    profile = MASTER_PROFILES.get(scoring_profile, MASTER_PROFILES["Balanced"])
+    mode    = ANALYSIS_MODES.get(analysis_mode, ANALYSIS_MODES["Hybrid"])
+
     print("\n" + "="*60)
-    print("🏗️  SCORING ENGINE — 4-Layer Pipeline")
+    print(f"🏗️  SCORING ENGINE | Mode: {analysis_mode} | Profile: {profile['icon']} {scoring_profile}")
     print("="*60)
 
     # Layer 1: Hard Gates
     df = apply_hard_gates(df)
 
-    # Layer 2: Quality Score (run on ALL stocks, not just gate-passed)
+    # Layer 2: Quality Score
     df = compute_quality_score(df)
 
     # Layer 3: Momentum Score
@@ -727,19 +762,22 @@ def run_full_scoring(df: pd.DataFrame) -> pd.DataFrame:
     # Governance Bonus
     df = compute_governance_bonus(df)
 
-    # QGLP Framekwork (Motilal Oswal)
-    df = compute_qglp_score(df)
+    # Profile-adaptive QGLP Framework (Motilal Oswal)
+    df = compute_qglp_score(df, profile=profile)
 
     # Market Regime Adjustments (Wave Detection)
     df = apply_market_regime(df)
 
-    # Layer 4: Composite + Conviction Tier
-    df = compute_composite_score(df)
+    # Layer 4: Composite score — blend Fundamental vs Momentum per Analysis Mode
+    # Inject analysis mode blend into composite weights
+    fundamental_w = mode["fundamental_w"]
+    momentum_w    = mode["momentum_w"]
+    df = compute_composite_score(df, fundamental_w=fundamental_w, momentum_w=momentum_w)
 
     # Tsunami Detection
     df = detect_tsunami_signals(df)
 
-    # Sort by composite score descending
+    # Sort by composite score
     df = df.sort_values("composite_score", ascending=False).reset_index(drop=True)
     df["rank"] = range(1, len(df) + 1)
 
