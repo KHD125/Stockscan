@@ -21,7 +21,8 @@ from config import (
     MCAP_TIERS, MCAP_MIN_FLOOR,
     VALUATION_SIGNALS, PEG_ZONES, MEAN_REVERSION, BAID_SELL_TRIGGERS,
     DEFAULT_CYCLE_TEMPERATURE, MARKS_CYCLE,
-    MASTER_PROFILES, ANALYSIS_MODES, WAVE_DETECTION, MARKET_REGIMES
+    MASTER_PROFILES, ANALYSIS_MODES, WAVE_DETECTION,
+    REGIME_ADJUSTMENTS, get_adaptive_weights,
 )
 
 
@@ -677,58 +678,16 @@ def compute_qglp_score(df: pd.DataFrame, profile: dict = None) -> pd.DataFrame:
 # WAVE DETECTION: MARKET REGIME AWARENESS
 # ═══════════════════════════════════════════════════════════════
 
-def apply_market_regime(df: pd.DataFrame) -> pd.DataFrame:
-    """Wave Detection: Auto-detect market state and apply scoring boosts."""
-    df = df.copy()
-    
-    # Auto-detect regime based on breadth (momentum > 0)
+def detect_market_regime(df: pd.DataFrame) -> str:
+    """Auto-detect market regime from breadth of CRS data."""
     if "crs_50d" in df.columns:
         breadth = (df["crs_50d"] > 0).mean()
         if breadth > 0.60:
-            regime = "BULL"
+            return "BULL"
         elif breadth < 0.40:
-            regime = "BEAR"
-        else:
-            regime = "SIDEWAYS"
-    else:
-        regime = "SIDEWAYS"
-        
-    df.attrs["detected_market_regime"] = regime
-    
-    if regime == "BULL":
-        # Boost momentum scores in bull market
-        if "momentum_score" in df.columns:
-            df["momentum_score"] = _safe_clip(df["momentum_score"] * MARKET_REGIMES["bull"]["boost_momentum"])
-    elif regime == "BEAR":
-        # Boost deep value scores in bear market (distance from 52W high is highly negative)
-        if "dist_52wh" in df.columns and "valuation_score" in df.columns:
-            deep_value_mask = df["dist_52wh"] < -MARKET_REGIMES["bear"]["deep_value_threshold"]
-            df.loc[deep_value_mask, "valuation_score"] = _safe_clip(
-                df.loc[deep_value_mask, "valuation_score"] * MARKET_REGIMES["bear"]["boost_value"]
-            )
-            # Recompute quality score with boosted valuation
-            df["quality_score"] = _safe_clip(
-                df["moat_score"] * QUALITY_WEIGHTS["moat"] +
-                df["growth_score"] * QUALITY_WEIGHTS["growth"] +
-                df["cash_score"] * QUALITY_WEIGHTS["cash"] +
-                df["margin_score"] * QUALITY_WEIGHTS["margin"] +
-                df["balance_sheet_score"] * QUALITY_WEIGHTS["balance_sheet"] +
-                df["valuation_score"] * QUALITY_WEIGHTS["valuation"]
-            )
-            # Reapply mean reversion penalty
-            if "mean_reversion_risk" in df.columns:
-                df["quality_score"] = np.where(
-                    df["mean_reversion_risk"] == 1,
-                    df["quality_score"] * MEAN_REVERSION["penalty_factor"],
-                    df["quality_score"]
-                )
-            
-    return df
+            return "BEAR"
+    return "SIDEWAYS"
 
-
-# ═══════════════════════════════════════════════════════════════
-# MASTER SCORING PIPELINE
-# ═══════════════════════════════════════════════════════════════
 
 def run_full_scoring(
     df: pd.DataFrame,
@@ -737,51 +696,65 @@ def run_full_scoring(
 ) -> pd.DataFrame:
     """Execute the complete 4-layer adaptive scoring pipeline.
     
-    Args:
-        df: Clean master DataFrame from fetch_and_clean_data()
-        analysis_mode: 'Hybrid' | 'Fundamental' | 'Technical'
-        scoring_profile: One of the 8 MASTER_PROFILES keys
+    Architecture:
+      1. Hard Gates (binary pass/fail)
+      2. Quality + Momentum sub-scores (0-100)
+      3. Regime detection → get_adaptive_weights(profile, regime)
+      4. Composite blend using Analysis Mode + regime-adjusted momentum boost
     """
-    # Look up profile + mode from Policy Engine (config factory)
-    profile = MASTER_PROFILES.get(scoring_profile, MASTER_PROFILES["Balanced"])
-    mode    = ANALYSIS_MODES.get(analysis_mode, ANALYSIS_MODES["Hybrid"])
+    mode = ANALYSIS_MODES.get(analysis_mode, ANALYSIS_MODES["Hybrid"])
+
+    # ── Step 0: Detect market regime from the data ──
+    regime = detect_market_regime(df)
+    df.attrs["detected_market_regime"] = regime
+
+    # ── Step 1: Get regime-adaptive weights ──
+    adaptive = get_adaptive_weights(scoring_profile, regime)
 
     print("\n" + "="*60)
-    print(f"🏗️  SCORING ENGINE | Mode: {analysis_mode} | Profile: {profile['icon']} {scoring_profile}")
+    print(f"🏗️  SCORING ENGINE")
+    print(f"   Mode:    {analysis_mode}")
+    print(f"   Profile: {adaptive.get('profile_name')} | Regime: {adaptive.get('regime_label')}")
+    print(f"   Weights: Q={adaptive['quality_w']:.0%} G={adaptive['growth_w']:.0%} "
+          f"L={adaptive['longevity_w']:.0%} P={adaptive['price_w']:.0%}")
+    print(f"   Gates:   ROCE≥{adaptive['roce_gate']:.0f}% | Growth≥{adaptive['growth_gate']:.0f}% | PEG≤{adaptive['peg_gate']:.1f}")
     print("="*60)
 
-    # Layer 1: Hard Gates
+    # ── Layer 1: Hard Gates ──
     df = apply_hard_gates(df)
 
-    # Layer 2: Quality Score
+    # ── Layer 2: Quality Score ──
     df = compute_quality_score(df)
 
-    # Layer 3: Momentum Score
+    # ── Layer 3: Momentum Score (apply regime momentum boost) ──
     df = compute_momentum_score(df)
+    momentum_boost = adaptive.get("momentum_boost", 1.0)
+    if momentum_boost != 1.0 and "momentum_score" in df.columns:
+        df["momentum_score"] = _safe_clip(df["momentum_score"] * momentum_boost)
+        print(f"   🌊 Regime momentum boost: {momentum_boost:.2f}x")
 
-    # Governance Bonus
+    # ── Governance Bonus ──
     df = compute_governance_bonus(df)
 
-    # Profile-adaptive QGLP Framework (Motilal Oswal)
-    df = compute_qglp_score(df, profile=profile)
+    # ── Profile-adaptive QGLP Framework ──
+    df = compute_qglp_score(df, profile=adaptive)
 
-    # Market Regime Adjustments (Wave Detection)
-    df = apply_market_regime(df)
-
-    # Layer 4: Composite score — blend Fundamental vs Momentum per Analysis Mode
-    # Inject analysis mode blend into composite weights
+    # ── Layer 4: Composite — blend per Analysis Mode ──
     fundamental_w = mode["fundamental_w"]
     momentum_w    = mode["momentum_w"]
     df = compute_composite_score(df, fundamental_w=fundamental_w, momentum_w=momentum_w)
 
-    # Tsunami Detection
+    # ── Tsunami Detection ──
     df = detect_tsunami_signals(df)
 
-    # Sort by composite score
+    # ── Final sort ──
     df = df.sort_values("composite_score", ascending=False).reset_index(drop=True)
     df["rank"] = range(1, len(df) + 1)
 
-    print(f"\n✅ Scoring complete. Top 5 stocks:")
+    # Store adaptive weights in df for UI display
+    df.attrs["adaptive_weights"] = adaptive
+
+    print(f"\n✅ Scoring complete. Top 5:")
     top5 = df.head(5)[["rank", "name", "composite_score", "quality_score",
                         "momentum_score", "governance_bonus", "tier_label", "gate_pass"]]
     print(top5.to_string(index=False))
