@@ -20,6 +20,7 @@ def render_scanner_grid(df: pd.DataFrame, priority_cols: list = None):
     # Reorder columns to put priority columns first
     all_cols = list(df.columns)
     first_cols = ["rank", "name", "sector", "composite_score", "moat_growth_quad", "cash_machine_label", "buy_zone_label"]
+    first_cols = [c for c in first_cols if c in all_cols]
     
     if priority_cols:
         for c in priority_cols:
