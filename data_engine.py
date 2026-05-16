@@ -538,62 +538,48 @@ def compute_derived_signals(df: pd.DataFrame) -> pd.DataFrame:
 
     # ── SSGR Approximation (Ch.2) ──
     # SSGR = NFAT × NPM × (1 − DPR) − Dep_Rate
-    # With annual data only, we approximate using 1-year figures.
-    # DPR is approximated as 0.25 (typical Indian payout) when not available.
-    nfat = np.where(
-        df["fixed_assets"].notna() & (df["fixed_assets"] > 0),
-        df["revenue"] / df["fixed_assets"],
-        np.nan
-    )
-    npm_decimal = df["npm"].fillna(0) / 100.0
-    dpr_approx = 0.25  # conservative assumption
-    dep_rate = np.where(
-        df["fixed_assets"].notna() & (df["fixed_assets"] > 0) &
-        df["fixed_assets_1yb"].notna(),
-        # Depreciation ≈ (Fixed Assets 1YB - Fixed Assets + Capex additions)
-        # Capex ≈ |Investing Cash Flow| as proxy
-        np.abs(df["investing_cash_flow"].fillna(0)) / df["fixed_assets"],
-        np.nan
-    )
-    df["ssgr"] = pd.Series(
-        nfat * npm_decimal * (1 - dpr_approx) - dep_rate,
-        index=df.index
-    ) * 100  # convert to percentage
+    # NFAT = Revenue / Fixed Assets
+    # Dep_Rate = (FA_1YB - FA_current + Capex_est) / FA_current
+    #   Capex_est ≈ max(0, FA_current - FA_1YB) when FA grew
+    #   Depreciation ≈ FA_1YB - FA_current when FA shrunk (net depreciation)
+    # DPR approximated as 0.25 (typical Indian payout)
+    fa = df["fixed_assets"].fillna(0)
+    fa_1yb = df["fixed_assets_1yb"].fillna(0)
+    rev = df["revenue"].fillna(0)
+    npm_pct = df["npm"].fillna(0)
+
+    nfat = np.where(fa > 0, rev / fa, np.nan)
+    npm_decimal = npm_pct / 100.0
+    dpr_approx = 0.25
+
+    # Depreciation rate: approximate from fixed asset changes
+    # If FA grew: Dep ≈ (FA_1YB + Capex - FA) / FA, where Capex ≈ FA - FA_1YB + Dep
+    # Simplified: Dep_Rate ≈ avg depreciation rate for Indian cos = ~8-12% of FA
+    # Better: Dep ≈ (EBITDA - PAT) × fraction, but noisy.
+    # BEST with our data: Dep_Rate = change in FA as ratio.
+    # If FA_1YB > 0: depreciation_est = max(0, FA_1YB * 0.10) as typical 10% dep
+    dep_rate = np.where(fa > 0, 0.10, 0.0)  # 10% standard depreciation rate
+
+    ssgr_raw = nfat * npm_decimal * (1 - dpr_approx) - dep_rate
+    df["ssgr"] = pd.Series(ssgr_raw * 100, index=df.index).clip(-50, 100)
 
     # SSGR vs actual growth — the gold standard test
-    df["ssgr_cushion"] = df["ssgr"] - df["rev_gr_5y"].fillna(df["rev_gr_3y"])
+    actual_growth = df["rev_gr_5y"].fillna(df["rev_gr_3y"]).fillna(0)
+    df["ssgr_cushion"] = df["ssgr"] - actual_growth
     df["ssgr_self_funded"] = (df["ssgr_cushion"] > 0).astype(int)
 
-    # ── Economic Profit (28th WCS) ──
-    # EP = Net Worth × (RoE − Cost of Equity)
-    # Cost of Equity ≈ 10% for India
-    cost_of_equity = 10.0
-    # Net Worth ≈ Market Cap / PB ratio. If PB not available, use reserves.
-    net_worth = np.where(
-        df["pe"].notna() & (df["pe"] > 0) & df["roe"].notna() & (df["roe"] > 0),
-        df["market_cap"] / (df["pe"] * df["roe"] / (df["pat"].fillna(1).clip(lower=0.01))),
-        df["reserves"].fillna(0)
+    # ── Tax Rate Estimation (Malik Parameter 3) ──
+    # Tax ≈ (EBITDA - Interest - PAT) / (EBITDA - Interest)
+    # Simplified: Tax ≈ 1 - (PAT / EBITDA) when EBITDA > PAT > 0
+    df["tax_rate_est"] = np.where(
+        (df["ebitda"].fillna(0) > 0) & (df["pat"].fillna(0) > 0) &
+        (df["ebitda"].fillna(0) > df["pat"].fillna(0)),
+        (1 - df["pat"] / df["ebitda"]) * 100,
+        np.nan
     )
-    # Simpler: Net Worth ≈ PAT / (ROE/100)
-    net_worth_simple = np.where(
-        df["roe"].notna() & (df["roe"] > 1),
-        df["pat"].fillna(0) / (df["roe"] / 100.0),
-        df["reserves"].fillna(0)
-    )
-    df["economic_profit"] = pd.Series(net_worth_simple, index=df.index) * (df["roe"].fillna(0) - cost_of_equity) / 100.0
-    df["economic_profit_positive"] = (df["economic_profit"] > 0).astype(int)
-
-    # ── High Cash + High Debt Flag (Malik Shenanigan 4) ──
-    # If company holds significant cash AND significant debt, why not repay?
-    df["high_cash_high_debt"] = (
-        (df["cash_equivalents"].fillna(0) > 0) &
-        (df["debt"].fillna(0) > 0) &
-        (df["cash_equivalents"].fillna(0) > df["debt"].fillna(0) * 0.3)
-    ).astype(int)
 
     # ── Interest Coverage Proxy (Malik Parameter 4) ──
-    # Interest ≈ EBITDA - EBIT. If we don't have EBIT, use (EBITDA × OPM adjustment)
-    # Simpler: we have D/E and debt. Interest ≈ Debt × assumed rate (10%)
+    # Interest ≈ Debt × assumed rate (10%)
     assumed_interest_rate = 0.10
     df["interest_expense_est"] = df["debt"].fillna(0) * assumed_interest_rate
     df["interest_coverage"] = np.where(
@@ -602,27 +588,57 @@ def compute_derived_signals(df: pd.DataFrame) -> pd.DataFrame:
         99.0  # debt-free = effectively infinite coverage
     )
 
+    # ── Economic Profit (28th WCS) ──
+    # EP = Net Worth × (RoE − Cost of Equity)
+    # Cost of Equity ≈ 10% for India
+    # Net Worth = PAT / (ROE/100)
+    cost_of_equity = 10.0
+    roe_safe = df["roe"].fillna(0).clip(lower=1)  # avoid division by near-zero
+    net_worth = np.where(
+        (df["roe"].fillna(0) > 1) & (df["pat"].fillna(0) > 0),
+        df["pat"] / (roe_safe / 100.0),
+        df["reserves"].fillna(0).clip(lower=1)
+    )
+    df["economic_profit"] = pd.Series(net_worth, index=df.index) * (df["roe"].fillna(0) - cost_of_equity) / 100.0
+    df["economic_profit_positive"] = (df["economic_profit"] > 0).astype(int)
+
+    # ── High Cash + High Debt Flag (Malik Shenanigan 4) ──
+    df["high_cash_high_debt"] = (
+        (df["cash_equivalents"].fillna(0) > 0) &
+        (df["debt"].fillna(0) > 0) &
+        (df["cash_equivalents"].fillna(0) > df["debt"].fillna(0) * 0.3)
+    ).astype(int)
+
     # ── Malik 8-Parameter Checklist Score (Ch.4, 0-100) ──
     # Each parameter scored 0 or 12.5 (8 params × 12.5 = 100)
-    pw = 12.5  # per-parameter weight
+    pw = 12.5
 
-    # P1: Sales Growth > 10% (>15% preferred)
-    malik_p1 = np.where(df["rev_gr_5y"].fillna(df["rev_gr_3y"]).fillna(0) >= 15, pw,
-               np.where(df["rev_gr_5y"].fillna(df["rev_gr_3y"]).fillna(0) >= 10, pw * 0.7, 0))
+    # P1: Sales Growth > 10% (>15% preferred) — use 10Y if available, fallback 5Y, 3Y
+    rev_growth_best = df["rev_gr_10y"].fillna(df["rev_gr_5y"]).fillna(df["rev_gr_3y"]).fillna(0)
+    malik_p1 = np.where(rev_growth_best >= 15, pw,
+               np.where(rev_growth_best >= 10, pw * 0.7, 0))
 
-    # P2: NPM > 8%, stable
-    malik_p2 = np.where(df["npm"].fillna(0) >= 8, pw,
-               np.where(df["npm"].fillna(0) >= 5, pw * 0.5, 0))
+    # P2: NPM > 8%, stable or improving
+    npm_stable = (df["npm"].fillna(0) >= df["npm_1yb"].fillna(0)).astype(float)
+    malik_p2 = np.where(
+        (df["npm"].fillna(0) >= 8) & (npm_stable >= 1), pw,
+        np.where(df["npm"].fillna(0) >= 8, pw * 0.8,
+        np.where(df["npm"].fillna(0) >= 5, pw * 0.5, 0)))
 
-    # P3: Tax Rate ~25-30% (we can't check this without explicit tax data, give partial)
-    malik_p3 = pw * 0.5  # conservative — assume partial pass
+    # P3: Tax Rate ~25-30% (now computed from actual data)
+    malik_p3 = np.where(
+        df["tax_rate_est"].notna(),
+        np.where((df["tax_rate_est"] >= 20) & (df["tax_rate_est"] <= 35), pw,
+        np.where((df["tax_rate_est"] >= 15) & (df["tax_rate_est"] <= 40), pw * 0.5, 0)),
+        pw * 0.3  # no data = small benefit of doubt
+    )
 
     # P4: Interest Coverage > 3x
     malik_p4 = np.where(df["interest_coverage"] >= 8, pw,
                np.where(df["interest_coverage"] >= 3, pw * 0.7, 0))
 
     # P5: D/E < 0.5
-    malik_p5 = np.where(df["debt_to_equity"].fillna(0) <= 0, pw,  # zero debt = gold
+    malik_p5 = np.where(df["debt_to_equity"].fillna(0) <= 0, pw,
                np.where(df["debt_to_equity"].fillna(0) <= 0.5, pw * 0.9,
                np.where(df["debt_to_equity"].fillna(0) <= 1.0, pw * 0.5, 0)))
 
@@ -630,18 +646,23 @@ def compute_derived_signals(df: pd.DataFrame) -> pd.DataFrame:
     malik_p6 = np.where(df["current_ratio"].fillna(0) >= 1.5, pw,
                np.where(df["current_ratio"].fillna(0) >= 1.25, pw * 0.7, 0))
 
-    # P7: CFO positive
-    malik_p7 = np.where(df["operating_cash_flow"].fillna(0) > 0, pw, 0)
+    # P7: CFO positive (both current and 1YB for consistency)
+    ocf_curr_pos = df["operating_cash_flow"].fillna(0) > 0
+    ocf_1yb_pos = df["ocf_1yb"].fillna(0) > 0
+    malik_p7 = np.where(ocf_curr_pos & ocf_1yb_pos, pw,  # both years positive
+               np.where(ocf_curr_pos, pw * 0.7, 0))       # at least current positive
 
-    # P8: CFO/PAT > 0.7 (cash confirms earnings)
-    malik_p8 = np.where(df["cfo_to_pat"].fillna(0) >= 1.0, pw,
-               np.where(df["cfo_to_pat"].fillna(0) >= 0.7, pw * 0.7, 0))
+    # P8: CFO/PAT ≈ 1.0 (cfo_to_pat in CSV is PERCENTAGE, e.g. 73.04%)
+    cfo_pat_pct = df["cfo_to_pat"].fillna(0)  # already in percentage
+    malik_p8 = np.where(cfo_pat_pct >= 100, pw,            # CFO ≥ PAT = gold
+               np.where(cfo_pat_pct >= 70, pw * 0.7,       # 70-100% = pass
+               np.where(cfo_pat_pct >= 50, pw * 0.3, 0)))  # 50-70% = partial
 
     df["malik_score"] = pd.Series(
         malik_p1 + malik_p2 + malik_p3 + malik_p4 +
         malik_p5 + malik_p6 + malik_p7 + malik_p8,
         index=df.index
-    ).clip(0, 100)
+    ).clip(0, 100).round(1)
 
     df["malik_label"] = np.select(
         [df["malik_score"] >= 80, df["malik_score"] >= 60, df["malik_score"] >= 40],
@@ -649,27 +670,70 @@ def compute_derived_signals(df: pd.DataFrame) -> pd.DataFrame:
         default="🔴 Poor"
     )
 
+    # ══════════════════════════════════════════════════════════════
+    # MOTILAL OSWAL WEALTH CREATION SIGNALS (30 Annual Studies)
+    # ══════════════════════════════════════════════════════════════
+
     # ── Moat-Growth Matrix (22nd WCS) ──
-    # Strong Moat = ROCE > 15%. High Growth = PAT CAGR > 15%
     has_moat = df["roce_med_5y"].fillna(df["roce"]).fillna(0) >= 15
     has_growth = df["pat_gr_5y"].fillna(df["pat_gr_3y"]).fillna(0) >= 15
     df["moat_growth_quad"] = np.select(
-        [
-            has_moat & has_growth,
-            has_moat & ~has_growth,
-            ~has_moat & has_growth,
-        ],
-        [
-            "⭐ Wealth Creator",     # Strong Moat + High Growth
-            "🛡️ Quality Trap",       # Strong Moat + Low Growth
-            "⚡ Growth Trap",         # Weak Moat + High Growth
-        ],
-        default="💀 Wealth Destroyer"  # Weak Moat + Low Growth
+        [has_moat & has_growth, has_moat & ~has_growth, ~has_moat & has_growth],
+        ["⭐ Wealth Creator", "🛡️ Quality Trap", "⚡ Growth Trap"],
+        default="💀 Wealth Destroyer"
     )
+
+    # ── Sales→Profit Conversion (Malik Moat Test 3 + WCS) ──
+    # Profit CAGR should >= Revenue CAGR (operating leverage proof)
+    df["sales_profit_conversion"] = np.where(
+        df["rev_gr_5y"].fillna(0) > 0,
+        df["pat_gr_5y"].fillna(0) - df["rev_gr_5y"].fillna(0),
+        np.nan
+    )
+    df["operating_leverage"] = (df["sales_profit_conversion"].fillna(0) > 0).astype(int)
+
+    # ── P/E < ROE Rule (Raamdeo's 1st WCS) ──
+    # Inherent margin of safety when PE < sustainable ROE
+    df["pe_vs_roe_mos"] = np.where(
+        df["pe"].notna() & df["roe"].notna() & (df["pe"] > 0),
+        df["roe"].fillna(0) - df["pe"].fillna(0),  # positive = MoS exists
+        np.nan
+    )
+    df["pe_below_roe"] = (df["pe_vs_roe_mos"].fillna(0) > 0).astype(int)
+
+    # ── Earnings Yield (Malik Ch.9 + Marks) ──
+    # EY = 100 / PE. Must exceed G-Sec (~7%) + 3% = 10%
+    df["earnings_yield"] = np.where(
+        df["pe"].notna() & (df["pe"] > 0),
+        100.0 / df["pe"],
+        np.nan
+    )
+    df["ey_adequate"] = (df["earnings_yield"].fillna(0) >= 10).astype(int)  # EY > 10%
+
+    # ── PEG Safety with multiple tiers ──
+    df["peg_zone"] = np.select(
+        [
+            df["peg"].fillna(99) <= 0,           # negative PEG = declining earnings
+            df["peg"].fillna(99) <= 0.5,          # very cheap
+            df["peg"].fillna(99) <= 1.0,          # Lynch sweet spot
+            df["peg"].fillna(99) <= 1.5,          # fair
+            df["peg"].fillna(99) <= 2.0,          # expensive
+        ],
+        ["🔴 Declining", "💎 Deep Value", "🟢 Fair PEG", "🟡 Stretched", "🟠 Expensive"],
+        default="🔴 Overpriced"
+    )
+
+    # ── Capex Efficiency (CWIP → Revenue conversion) ──
+    # cwip_conversion already computed above. Create efficiency signal.
+    df["capex_productive"] = (
+        (df["cwip_conversion"].fillna(0) > 0) &  # CWIP converted to assets
+        (df["rev_gr_yoy"].fillna(0) > 0)           # AND revenue grew
+    ).astype(int)
 
     n_derived = len([c for c in df.columns if c not in set(COMMON_COLS.values())])
     print(f"  ✅ Computed all derived signals. Total columns: {len(df.columns)}")
     return df
+
 
 
 
