@@ -17,7 +17,7 @@ import time
 import warnings
 warnings.filterwarnings('ignore')
 
-from data_engine import build_master_dataframe
+from data_engine import fetch_and_clean_data
 from scoring_engine import run_full_scoring
 from forensic_engine import run_forensic_analysis
 from ui_components import (inject_css, render_hero_banner, render_metric_strip,
@@ -26,20 +26,29 @@ from ui_components import (inject_css, render_hero_banner, render_metric_strip,
 from config import (COLORS, TIER_COLORS, CONVICTION_TIERS, UI, HARD_GATES,
                     QUALITY_WEIGHTS, MOMENTUM_WEIGHTS, COMPOSITE_WEIGHTS,
                     VALUATION_SIGNALS, MARKS_CYCLE, DEFAULT_CYCLE_TEMPERATURE,
-                    BAID_SELL_TRIGGERS, MEAN_REVERSION, PEG_ZONES)
+                    BAID_SELL_TRIGGERS, MEAN_REVERSION, PEG_ZONES,
+                    MASTER_PROFILES, ANALYSIS_MODES)
 
 
 # ═══════════════════════════════════════════════════════════════
-# DATA LOADING (cached)
+# 3-TIER CACHE SPLIT
+# Tier 1: fetch_and_clean_data — CACHED. Only reruns on Clear Cache or new sheet.
+# Tier 2: run_full_scoring     — NOT cached. Instant on dropdown change.
+# Tier 3: run_forensic_analysis— NOT cached. Instant.
 # ═══════════════════════════════════════════════════════════════
 @st.cache_data(show_spinner=False)
-def load_and_score(data_source="local", uploaded_files=None, sheet_id=None):
+def get_clean_data(data_source, uploaded_dict, sheet_id):
+    """Tier-1: Expensive data fetch + clean. Heavily cached."""
     t0 = time.time()
-    df = build_master_dataframe(data_source, uploaded_files, sheet_id)
-    df = run_full_scoring(df)
-    df = run_forensic_analysis(df)
+    df = fetch_and_clean_data(data_source, uploaded_dict, sheet_id)
     elapsed = time.time() - t0
     return df, elapsed
+
+def get_scored_data(clean_df, analysis_mode, scoring_profile):
+    """Tier-2+3: Instant scoring. NOT cached — runs in <0.5s on dropdowns change."""
+    df = run_full_scoring(clean_df, analysis_mode, scoring_profile)
+    df = run_forensic_analysis(df)
+    return df
 
 inject_css()
 
@@ -49,7 +58,7 @@ if "data_source" not in st.session_state:
 
 with st.sidebar:
     render_sidebar_brand()
-    
+
     st.markdown("### 📂 Data Source")
     col1, col2 = st.columns(2)
     with col1:
@@ -85,19 +94,50 @@ with st.sidebar:
                 elif "cashflow" in name: uploaded_dict["cashflow"] = f
                 elif "shareholding" in name: uploaded_dict["shareholding"] = f
                 elif "technical" in name: uploaded_dict["technical"] = f
-            
-            if len(uploaded_dict) >= 1: 
+            if len(uploaded_dict) >= 1:
                 data_ready = True
+
+    st.markdown("---")
+    # ══ Analysis Mode ══
+    st.markdown("### 🎯 Analysis Mode")
+    analysis_mode = st.selectbox(
+        "Mode",
+        options=list(ANALYSIS_MODES.keys()),
+        index=0,
+        format_func=lambda k: ANALYSIS_MODES[k]["label"],
+        key="sel_mode",
+        label_visibility="collapsed",
+    )
+    st.caption(ANALYSIS_MODES[analysis_mode]["description"])
+
+    st.markdown("### 📊 Scoring Profile")
+    scoring_profile = st.selectbox(
+        "Profile",
+        options=list(MASTER_PROFILES.keys()),
+        index=0,
+        format_func=lambda k: f"{MASTER_PROFILES[k]['icon']} {MASTER_PROFILES[k]['label']}",
+        key="sel_profile",
+        label_visibility="collapsed",
+    )
+    profile_cfg = MASTER_PROFILES[scoring_profile]
+    st.caption(profile_cfg["description"])
 
 if not data_ready:
     st.info("👋 Welcome! Please select a data source from the sidebar (Google Sheets or Upload CSV) to begin scanning.")
     st.stop()
 
-with st.spinner("🔄 Loading & scoring 2,100+ stocks..."):
+with st.spinner("🔄 Loading data..."):
     try:
-        df, load_time = load_and_score(st.session_state.data_source, uploaded_dict, sheet_id)
+        clean_df, load_time = get_clean_data(st.session_state.data_source, uploaded_dict, sheet_id)
     except Exception as e:
         st.error(f"❌ Error loading data: {e}")
+        st.stop()
+
+with st.spinner(f"🧭 Scoring with {scoring_profile} profile..."):
+    try:
+        df = get_scored_data(clean_df, analysis_mode, scoring_profile)
+    except Exception as e:
+        st.error(f"❌ Scoring error: {e}")
         st.stop()
 
 # Key metrics
