@@ -172,8 +172,15 @@ def compute_red_flags(df: pd.DataFrame) -> pd.DataFrame:
         0
     )
 
-    # 8. Share dilution
-    df["rf_dilution"] = df.get("dilution_flag", 0).fillna(0).astype(int)
+    # 8. Share dilution — uses the new 4-tier materiality system from data_engine
+    # dilution_flag: 0=Clean, 1=ESOP-level(<3%), 2=Meaningful(3-10%), 3=Predatory QIP(>10%)
+    # Forensic flag only activates for Tier 2+ (>3% meaningful dilution).
+    # Tier 1 (tiny ESOPs) is NOT a forensic red flag — it is normal corporate practice.
+    df["rf_dilution"] = np.where(
+        df.get("dilution_flag", pd.Series(0, index=df.index)).fillna(0) >= 2,
+        1,  # Flag: meaningful or predatory dilution detected
+        0   # Clean: no dilution, or minor ESOP-level (<3%)
+    )
 
     # 9. Negative free cash flow (cash burn)
     # BUG FIX: Growth companies investing in capex naturally have negative FCF.
