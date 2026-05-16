@@ -145,7 +145,8 @@ with cc_col2:
         format_func=lambda k: f"{MASTER_PROFILES[k]['icon']} {MASTER_PROFILES[k]['label']}",
         key="sel_profile",
     )
-    st.caption(MASTER_PROFILES[scoring_profile]["description"])
+    profile_cfg = MASTER_PROFILES[scoring_profile]
+    st.caption(profile_cfg["description"])
 
 st.markdown("<br>", unsafe_allow_html=True)
 
