@@ -18,6 +18,9 @@ import time
 import warnings
 warnings.filterwarnings('ignore')
 
+import sys
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 from core import fetch_and_clean_data, run_full_scoring, run_forensic_analysis
 from ui import (render_scanner_grid, render_moat_growth_matrix, render_fisher_module,
                 inject_css, render_hero_banner, render_metric_strip, render_stock_card,
