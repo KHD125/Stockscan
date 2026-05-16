@@ -22,6 +22,11 @@ def inject_css():
     /* ── Global ── */
     html, body, [data-testid="stAppViewContainer"] {{
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        background-color: #050505 !important;
+        background-image: 
+            radial-gradient(at 0% 0%, rgba(139,92,246,0.03) 0px, transparent 50%),
+            radial-gradient(at 100% 100%, rgba(228,179,65,0.03) 0px, transparent 50%);
+        background-attachment: fixed;
     }}
 
     /* ── Responsive Layout ── */
@@ -30,15 +35,16 @@ def inject_css():
         padding-top: 1rem;
     }}
 
-    /* ── Hero Banner ── */
+    /* ── Hero Banner (Glassmorphism) ── */
     .hero-banner {{
-        text-align: center; padding: 2rem 1.5rem 1.8rem;
-        background: linear-gradient(135deg, {COLORS['gradient_start']} 0%,
-                    {COLORS['gradient_mid']} 40%, {COLORS['gradient_end']} 100%);
-        border: 1px solid rgba(88,166,255,0.15);
+        text-align: center; padding: 2.5rem 1.5rem 2rem;
+        background: rgba(13, 17, 23, 0.6);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(88,166,255,0.1);
         border-radius: 16px; margin-bottom: 1.5rem;
         position: relative; overflow: hidden;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.05);
+        box-shadow: 0 10px 40px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05);
     }}
     .hero-banner::before {{
         content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0;
@@ -67,15 +73,23 @@ def inject_css():
         letter-spacing: 1px;
     }}
 
-    /* ── Metric Strip ── */
-    .m-strip {{ display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }}
+    /* ── Metric Strip (Glassmorphism) ── */
+    .m-strip {{ display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }}
     .m-chip {{
-        background: {COLORS['bg_secondary']}; border: 1px solid {COLORS['border']};
-        border-radius: 12px; padding: 14px 0; text-align: center; flex: 1; min-width: 100px;
-        transition: all 0.2s ease;
+        background: rgba(16, 22, 30, 0.7);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        border: 1px solid rgba(255,255,255,0.05);
+        border-radius: 12px; padding: 16px 0; text-align: center; flex: 1; min-width: 110px;
+        transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
     }}
-    .m-chip:hover {{ border-color: {COLORS['border_hover']}; transform: translateY(-1px); }}
-    .m-val {{ font-size: 1.5rem; font-weight: 700; color: {COLORS['text_primary']}; line-height: 1; }}
+    .m-chip:hover {{ 
+        border-color: rgba(255,255,255,0.15); 
+        transform: translateY(-3px); 
+        box-shadow: 0 8px 25px rgba(0,0,0,0.4);
+    }}
+    .m-val {{ font-size: 1.5rem; font-weight: 700; color: {COLORS['text_primary']}; line-height: 1; font-family: 'JetBrains Mono', 'Fira Code', monospace; letter-spacing: -0.5px; }}
     .m-lbl {{ font-size: 0.65rem; color: {COLORS['text_secondary']}; text-transform: uppercase;
               letter-spacing: 0.6px; margin-top: 4px; }}
     .m-green .m-val {{ color: {COLORS['green']}; }}
@@ -84,15 +98,19 @@ def inject_css():
     .m-blue .m-val {{ color: {COLORS['blue']}; }}
     .m-purple .m-val {{ color: {COLORS['purple']}; }}
 
-    /* ── Stock Cards ── */
+    /* ── Stock Cards (Glassmorphism) ── */
     .stock-card {{
-        background: {COLORS['bg_secondary']}; border: 1px solid {COLORS['border']};
-        border-radius: 14px; padding: 18px 20px; margin-bottom: 10px;
-        transition: all 0.2s ease; cursor: default;
+        background: rgba(16, 22, 30, 0.6);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border: 1px solid rgba(255,255,255,0.05);
+        border-radius: 14px; padding: 18px 20px; margin-bottom: 12px;
+        transition: all 0.3s ease; cursor: default;
     }}
     .stock-card:hover {{
-        border-color: {COLORS['border_hover']};
-        box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+        background: rgba(20, 28, 38, 0.8);
+        border-color: rgba(255,255,255,0.1);
+        box-shadow: 0 8px 30px rgba(0,0,0,0.4);
     }}
     .stock-card-gold {{ border-left: 3px solid {COLORS['gold']}; }}
     .stock-card-green {{ border-left: 3px solid {COLORS['green']}; }}
