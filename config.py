@@ -353,6 +353,7 @@ BAID_SELL_TRIGGERS = {
 
 # ═══════════════════════════════════════════════════════════════
 # 7c. ANALYSIS MODES — Controls Fundamental vs Technical balance
+#     Each mode specifies which Scoring Profiles are valid for it.
 # ═══════════════════════════════════════════════════════════════
 ANALYSIS_MODES = {
     "Hybrid": {
@@ -360,18 +361,28 @@ ANALYSIS_MODES = {
         "fundamental_w": 0.70,
         "momentum_w": 0.30,
         "description": "Best of both — great business + institutions are buying it now",
+        "allowed_profiles": [
+            "Balanced", "Value", "Growth", "Quality",
+            "Momentum", "GARP", "Turnaround", "Defensive",
+        ],
     },
     "Fundamental": {
         "label": "📚 Fundamental Only",
         "fundamental_w": 1.00,
         "momentum_w": 0.00,
         "description": "Pure business quality — for long-term buy-and-hold Coffee Can investors",
+        "allowed_profiles": [
+            "Balanced", "Value", "Growth", "Quality", "GARP", "Defensive",
+        ],
     },
     "Technical": {
         "label": "📈 Technical Only",
         "fundamental_w": 0.10,
         "momentum_w": 0.90,
         "description": "Pure price action — follow institutional money flow with O'Neil rules",
+        "allowed_profiles": [
+            "Momentum", "Turnaround",
+        ],
     },
 }
 
@@ -381,16 +392,13 @@ ANALYSIS_MODES = {
 # forensic sensitivity, and UI priority columns.
 # ═══════════════════════════════════════════════════════════════
 MASTER_PROFILES = {
+    # ── FUNDAMENTAL-DOMINANT PROFILES ──
     "Balanced": {
         "label": "Balanced (QGLP)",    "icon": "⚖️",
         "description": "Raamdeo Agrawal's QGLP — balanced Quality, Growth, Longevity, Price",
-        # QGLP sub-weights (must sum to 1.0)
         "quality_w": 0.35, "growth_w": 0.35, "longevity_w": 0.15, "price_w": 0.15,
-        # Gate overrides
         "roce_gate": 15.0, "growth_gate": 15.0, "peg_gate": 1.5,
-        # Forensic multiplier (>1 = tighter scrutiny)
         "forensic_boost": 1.0,
-        # Columns to highlight in the Deep Scanner table
         "priority_cols": ["quality_score", "growth_score", "roce", "pat_gr_5y", "peg"],
     },
     "Value": {
@@ -417,14 +425,6 @@ MASTER_PROFILES = {
         "forensic_boost": 1.5,
         "priority_cols": ["roce_med_10y", "cfo_to_pat", "npm_med_5y", "debt_to_equity", "moat_score"],
     },
-    "Momentum": {
-        "label": "Momentum (O'Neil CAN-SLIM)",    "icon": "⚡",
-        "description": "Price + Earnings momentum — buy what FII/DII are accumulating RIGHT NOW",
-        "quality_w": 0.20, "growth_w": 0.25, "longevity_w": 0.10, "price_w": 0.15,
-        "roce_gate": 12.0, "growth_gate": 15.0, "peg_gate": 3.0,
-        "forensic_boost": 0.7,
-        "priority_cols": ["crs_50d", "ret_vs_n500_3m", "momentum_score", "rsi_14d", "dist_52wh"],
-    },
     "GARP": {
         "label": "GARP (Peter Lynch)",    "icon": "🎯",
         "description": "PEG < 1.0 mandated — Growth at a Reasonable Price. Lynch's golden rule",
@@ -432,14 +432,6 @@ MASTER_PROFILES = {
         "roce_gate": 15.0, "growth_gate": 15.0, "peg_gate": 1.0,
         "forensic_boost": 1.0,
         "priority_cols": ["peg", "pat_gr_5y", "pe", "valuation_score", "growth_score"],
-    },
-    "Turnaround": {
-        "label": "Turnaround / Special Situation",    "icon": "🔄",
-        "description": "QoQ acceleration + promoter buying + volume surge. High risk, high reward",
-        "quality_w": 0.20, "growth_w": 0.40, "longevity_w": 0.10, "price_w": 0.10,
-        "roce_gate": 8.0, "growth_gate": 0.0, "peg_gate": 5.0,
-        "forensic_boost": 1.3,
-        "priority_cols": ["pat_gr_yoy", "change_promoter_lq", "crs_50d", "volume", "pat_lq"],
     },
     "Defensive": {
         "label": "Defensive / Cash Cow",    "icon": "🏰",
@@ -449,21 +441,134 @@ MASTER_PROFILES = {
         "forensic_boost": 1.8,
         "priority_cols": ["free_cash_flow", "debt_to_equity", "cfo_to_pat", "current_ratio", "moat_score"],
     },
+    # ── MOMENTUM-DOMINANT PROFILES ──
+    "Momentum": {
+        "label": "Momentum (O'Neil CAN-SLIM)",    "icon": "⚡",
+        "description": "Price + Earnings momentum — buy what FII/DII are accumulating RIGHT NOW",
+        "quality_w": 0.20, "growth_w": 0.25, "longevity_w": 0.10, "price_w": 0.15,
+        "roce_gate": 12.0, "growth_gate": 15.0, "peg_gate": 3.0,
+        "forensic_boost": 0.7,
+        "priority_cols": ["crs_50d", "ret_vs_n500_3m", "momentum_score", "rsi_14d", "dist_52wh"],
+    },
+    "Turnaround": {
+        "label": "Turnaround / Special Situation",    "icon": "🔄",
+        "description": "QoQ acceleration + promoter buying + volume surge. High risk, high reward",
+        "quality_w": 0.20, "growth_w": 0.40, "longevity_w": 0.10, "price_w": 0.10,
+        "roce_gate": 8.0, "growth_gate": 0.0, "peg_gate": 5.0,
+        "forensic_boost": 1.3,
+        "priority_cols": ["pat_gr_yoy", "change_promoter_lq", "crs_50d", "volume", "pat_lq"],
+    },
 }
 
 # ═══════════════════════════════════════════════════════════════
-# 7e. WAVE DETECTION ANALYTICS (Institutional Smart Money)
+# 7e. REGIME-ADAPTIVE WEIGHT ADJUSTMENTS
+# When the market regime is auto-detected, these adjustments are
+# applied ON TOP of the selected Scoring Profile's base weights.
+# Positive = boost that factor, Negative = suppress that factor.
+# Gates tighten in greed, loosen in fear.
+# ═══════════════════════════════════════════════════════════════
+REGIME_ADJUSTMENTS = {
+    "BULL": {
+        "label": "🟢 Bull Market — Offence Mode",
+        # Shift weights: boost Growth + reduce Price conservatism
+        "quality_delta":   -0.05,   # slightly less defensive
+        "growth_delta":    +0.10,   # chase earnings acceleration
+        "longevity_delta": -0.05,   # longevity less critical in bull
+        "price_delta":     +0.00,   # keep price neutral
+        # Gates loosen slightly — rising tide lifts quality boats
+        "roce_gate_delta":   0.0,
+        "growth_gate_delta": +5.0,  # demand even higher growth in bull
+        "peg_gate_delta":   +0.5,   # tolerate slightly higher PEG
+        # Momentum gets extra weight in composite blend
+        "momentum_boost": 1.10,
+    },
+    "BEAR": {
+        "label": "🔴 Bear Market — Defence Mode",
+        # Shift weights: boost Quality + Longevity, suppress Growth
+        "quality_delta":   +0.15,   # fortress quality demanded
+        "growth_delta":    -0.10,   # growth doesn't matter if market is crashing
+        "longevity_delta": +0.05,   # survivors with 10Y track record
+        "price_delta":     -0.10,   # ignore valuation (everything looks cheap)
+        # Gates tighten — only the best survive
+        "roce_gate_delta":   +5.0,  # ROCE > 20% demanded
+        "growth_gate_delta": -5.0,  # relax growth gate (everyone is suffering)
+        "peg_gate_delta":   +1.0,   # relax PEG (denominator is depressed)
+        # Momentum is dangerous in bear — suppress
+        "momentum_boost": 0.70,
+    },
+    "SIDEWAYS": {
+        "label": "🟡 Sideways Market — Neutral",
+        # No adjustments — pure profile weights apply
+        "quality_delta":   0.0,
+        "growth_delta":    0.0,
+        "longevity_delta": 0.0,
+        "price_delta":     0.0,
+        "roce_gate_delta":   0.0,
+        "growth_gate_delta": 0.0,
+        "peg_gate_delta":   0.0,
+        "momentum_boost": 1.0,
+    },
+}
+
+
+def get_adaptive_weights(profile_name: str, regime: str = "SIDEWAYS") -> dict:
+    """The Weight Factory — cascades Profile → Regime → Final Weights.
+    
+    Returns a dict with final QGLP weights, gate thresholds, and momentum boost,
+    all adjusted for the current market regime.
+    """
+    profile = MASTER_PROFILES.get(profile_name, MASTER_PROFILES["Balanced"])
+    adj = REGIME_ADJUSTMENTS.get(regime, REGIME_ADJUSTMENTS["SIDEWAYS"])
+
+    # 1. Apply regime deltas to base profile weights
+    raw_q = profile["quality_w"]   + adj["quality_delta"]
+    raw_g = profile["growth_w"]    + adj["growth_delta"]
+    raw_l = profile["longevity_w"] + adj["longevity_delta"]
+    raw_p = profile["price_w"]     + adj["price_delta"]
+
+    # 2. Clamp to [0.05, 0.80] — never zero out a factor completely
+    raw_q = max(0.05, min(0.80, raw_q))
+    raw_g = max(0.05, min(0.80, raw_g))
+    raw_l = max(0.05, min(0.80, raw_l))
+    raw_p = max(0.05, min(0.80, raw_p))
+
+    # 3. Re-normalize so they sum to exactly 1.0
+    total = raw_q + raw_g + raw_l + raw_p
+    final_q = round(raw_q / total, 3)
+    final_g = round(raw_g / total, 3)
+    final_l = round(raw_l / total, 3)
+    final_p = round(1.0 - final_q - final_g - final_l, 3)  # absorb rounding error
+
+    # 4. Apply regime deltas to gate thresholds
+    final_roce_gate   = max(5.0, profile["roce_gate"]   + adj["roce_gate_delta"])
+    final_growth_gate = max(0.0, profile["growth_gate"]  + adj["growth_gate_delta"])
+    final_peg_gate    = max(0.5, profile["peg_gate"]     + adj["peg_gate_delta"])
+
+    return {
+        "quality_w":     final_q,
+        "growth_w":      final_g,
+        "longevity_w":   final_l,
+        "price_w":       final_p,
+        "roce_gate":     final_roce_gate,
+        "growth_gate":   final_growth_gate,
+        "peg_gate":      final_peg_gate,
+        "forensic_boost": profile["forensic_boost"],
+        "momentum_boost": adj["momentum_boost"],
+        "priority_cols":  profile["priority_cols"],
+        "regime":         regime,
+        "profile_name":   profile_name,
+        "regime_label":   adj["label"],
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# 7f. WAVE DETECTION ANALYTICS (Institutional Smart Money)
 # ═══════════════════════════════════════════════════════════════
 WAVE_DETECTION = {
     "vqs_liquidity": 0.50,    # VQS: Volume Strength
     "vqs_smart_money": 0.20,  # VQS: Smart Money Flow
     "vqs_consistency": 0.20,  # VQS: Pattern Consistency
     "vqs_efficiency": 0.10,   # VQS: Price Efficiency
-}
-
-MARKET_REGIMES = {
-    "bull": {"boost_momentum": 1.05, "boost_breakout": 1.05},
-    "bear": {"boost_value": 1.10, "deep_value_threshold": 20},
 }
 
 
