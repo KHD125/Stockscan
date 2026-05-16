@@ -298,12 +298,25 @@ with tabs[1]:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 with tabs[2]:
     st.markdown(f"<div class='sec-head'>🔬 The Ultimate Tear-Sheet</div>", unsafe_allow_html=True)
-    stock_names = filt["name"].dropna().tolist()
-    if stock_names:
+    # Quantamental Best Practice: Tear Sheet searches the FULL Universe.
+    all_stock_names = df["name"].dropna().tolist()
+    if all_stock_names:
         c_sel, c_blank = st.columns([1, 2])
         with c_sel:
-            selected = st.selectbox("Select Stock for Deep Dive", stock_names, key="xray_stock")
-        stock = filt[filt["name"] == selected].iloc[0]
+            selected = st.selectbox("Select Stock for Deep Dive (Full 2,000+ Universe)", all_stock_names, key="xray_stock")
+        stock = df[df["name"] == selected].iloc[0]
+        
+        # ELITE ARCHITECTURE: Explicit Rejection Banner for failed stocks
+        if stock.get("gate_pass", 0) == 0:
+            st.markdown(f"""
+            <div style="background:rgba(248, 81, 73, 0.1); border:1px solid #f85149; border-radius:8px; padding:15px; margin-bottom:20px;">
+                <h3 style="color:#f85149; margin:0 0 5px 0;">❌ SYSTEM REJECTED</h3>
+                <p style="color:#eee; margin:0; font-size:0.95rem;">
+                    This stock failed the Quantitative Hard Gates. It is excluded from the main scanner.<br>
+                    <b>Failure Reason(s):</b> {stock.get('failed_gates', 'Unknown')}
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
 
         # TOP LEVEL: Radar & Core Profile
         c1, c2 = st.columns([1, 1])
