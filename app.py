@@ -18,12 +18,10 @@ import time
 import warnings
 warnings.filterwarnings('ignore')
 
-from data_engine import fetch_and_clean_data
-from scoring_engine import run_full_scoring
-from forensic_engine import run_forensic_analysis
-from ui_components import (inject_css, render_hero_banner, render_metric_strip,
-                           render_stock_card, render_radar_chart, render_tier_summary,
-                           render_score_bar, render_sidebar_brand)
+from core import fetch_and_clean_data, run_full_scoring, run_forensic_analysis
+from ui import (render_scanner_grid, render_moat_growth_matrix, render_fisher_module,
+                inject_css, render_hero_banner, render_metric_strip, render_stock_card,
+                render_radar_chart, render_tier_summary, render_score_bar, render_sidebar_brand)
 from config import (COLORS, TIER_COLORS, CONVICTION_TIERS, UI, HARD_GATES,
                     QUALITY_WEIGHTS, MOMENTUM_WEIGHTS, COMPOSITE_WEIGHTS,
                     VALUATION_SIGNALS, MARKS_CYCLE, DEFAULT_CYCLE_TEMPERATURE,
@@ -265,7 +263,7 @@ if adaptive_w:
 # ═══════════════════════════════════════════════════════════════
 # TABS
 # ═══════════════════════════════════════════════════════════════
-tabs = st.tabs(["🏠 Discovery", "🔍 Scanner", "🛡️ Forensic", "📊 X-Ray", "🌊 Tsunami", "🏛️ QGLP Compounders", "📈 Sectors", "⚙️ Config"])
+tabs = st.tabs(["🏠 Discovery", "🔍 Deep Scanner", "🔬 The Tear-Sheet", "🌊 Market Pulse", "⚙️ Config"])
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # TAB 1: DISCOVERY DASHBOARD
@@ -285,84 +283,26 @@ with tabs[0]:
 with tabs[1]:
     st.markdown(f"<div class='sec-head'>🔍 Deep Scanner — {len(filt)} Stocks · {profile_cfg.get('icon', '⚖️')} {scoring_profile}</div>", unsafe_allow_html=True)
 
-    # Dynamic column reordering: profile priority_cols go FIRST
-    base_cols = ["rank", "name", "sector", "market_category", "market_cap", "composite_score",
-                 "quality_score", "momentum_score", "governance_bonus",
-                 "malik_score", "qglp_score", "forensic_label", "tier_label",
-                 "gate_pass", "gates_failed", "close_price",
-                 "roe_med_10y", "roce_med_10y", "cfo_to_pat", "pat_gr_5y", "rev_gr_5y",
-                 "debt_to_equity", "peg", "ssgr", "economic_profit", "moat_growth_quad",
-                 "piotroski_fscore", "pledged_percentage", "promoter_holdings",
-                 "crs_50d", "ret_vs_industry_1y", "interest_coverage",
-                 "mean_reversion_risk", "sell_alert_any"]
-    # Profile-specific priority columns go to front
     priority = profile_cfg.get("priority_cols", [])
-    ordered = ["rank", "name"]
-    for pc in priority:
-        if pc not in ordered:
-            ordered.append(pc)
-    for bc in base_cols:
-        if bc not in ordered:
-            ordered.append(bc)
-    available = [c for c in ordered if c in filt.columns]
-
-    st.dataframe(
-        filt[available].reset_index(drop=True),
-        use_container_width=True, height=600,
-        column_config={
-            "composite_score": st.column_config.ProgressColumn("Composite", min_value=0, max_value=100, format="%.0f"),
-            "quality_score": st.column_config.ProgressColumn("Quality", min_value=0, max_value=100, format="%.0f"),
-            "momentum_score": st.column_config.ProgressColumn("Momentum", min_value=0, max_value=100, format="%.0f"),
-            "malik_score": st.column_config.ProgressColumn("Malik", min_value=0, max_value=100, format="%.0f"),
-            "qglp_score": st.column_config.ProgressColumn("QGLP", min_value=0, max_value=100, format="%.0f"),
-            "market_cap": st.column_config.NumberColumn("MCap ₹Cr", format="%.0f"),
-        }
-    )
-    csv_data = filt[available].to_csv(index=False)
+    render_scanner_grid(filt, priority_cols=priority)
+    
+    csv_data = filt.to_csv(index=False)
     st.download_button("📥 Export CSV", csv_data, "multibagger_scan.csv", "text/csv")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# TAB 3: FORENSIC AUDIT
+# TAB 3: THE TEAR-SHEET (X-Ray + Forensic + Fisher)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 with tabs[2]:
-    st.markdown(f"<div class='sec-head'>🛡️ Forensic Audit Dashboard</div>", unsafe_allow_html=True)
-    forensic_df = filt[filt["conviction_tier"].isin([1,2,3])].copy()
-
-    c1, c2, c3, c4 = st.columns(4)
-    clean = int((forensic_df["forensic_label"] == "🟢 Clean").sum())
-    watch = int((forensic_df["forensic_label"] == "🟡 Watch").sum())
-    caution = int((forensic_df["forensic_label"] == "🟠 Caution").sum())
-    high_risk = int((forensic_df["forensic_label"] == "🔴 High Risk").sum())
-    c1.metric("🟢 Clean", clean)
-    c2.metric("🟡 Watch", watch)
-    c3.metric("🟠 Caution", caution)
-    c4.metric("🔴 High Risk", high_risk)
-
-    # F-Score histogram
-    if len(forensic_df) > 0:
-        fig_f = px.histogram(forensic_df, x="piotroski_fscore", nbins=10, color_discrete_sequence=[COLORS['purple']])
-        fig_f.update_layout(title="Piotroski F-Score Distribution", xaxis_title="F-Score (0-9)",
-                           yaxis_title="Count", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                           font=dict(color=COLORS['text_primary']), height=300)
-        st.plotly_chart(fig_f, use_container_width=True)
-
-    forensic_cols = ["rank","name","tier_label","composite_score","piotroski_fscore","piotroski_label",
-                     "forensic_score","forensic_label","red_flag_count","red_flag_list","cf_triangle"]
-    avail_f = [c for c in forensic_cols if c in forensic_df.columns]
-    st.dataframe(forensic_df[avail_f].reset_index(drop=True), use_container_width=True, height=400)
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# TAB 4: STOCK X-RAY
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-with tabs[3]:
-    st.markdown(f"<div class='sec-head'>📊 Stock X-Ray — Deep Dive Analysis</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='sec-head'>🔬 The Ultimate Tear-Sheet</div>", unsafe_allow_html=True)
     stock_names = filt["name"].dropna().tolist()
     if stock_names:
-        selected = st.selectbox("Select Stock", stock_names, key="xray_stock")
+        c_sel, c_blank = st.columns([1, 2])
+        with c_sel:
+            selected = st.selectbox("Select Stock for Deep Dive", stock_names, key="xray_stock")
         stock = filt[filt["name"] == selected].iloc[0]
 
+        # TOP LEVEL: Radar & Core Profile
         c1, c2 = st.columns([1, 1])
         with c1:
             render_stock_card(stock, show_scores=True)
@@ -376,6 +316,13 @@ with tabs[3]:
         with c2:
             fig = render_radar_chart(stock, f"{selected} — Quality Profile")
             st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("---")
+        
+        # MID LEVEL: Visualizations (Matrix)
+        render_moat_growth_matrix(filt, highlight_stock=selected)
+        
+        st.markdown("---")
 
         # ── Dr. Malik + WCS Signals ──
         st.markdown(f"<div class='sec-head'>🕉️ Peaceful Investing Signals (Dr. Malik)</div>", unsafe_allow_html=True)
@@ -451,15 +398,21 @@ with tabs[3]:
         c2.metric("PE Discount vs 10Y", f"{stock.get('pe_discount', 0):.1f}%")
         c3.metric("EV Compression", f"{stock.get('ev_compression', 0):.1f}")
         c4.metric("FCF Yield", f"{stock.get('fcf_yield', 0):.1f}%")
+        
+        st.markdown("---")
+        # BOTTOM LEVEL: The Systematic Fisher Proxy
+        render_fisher_module(stock)
     else:
         st.info("No stocks match current filters.")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# TAB 5: TSUNAMI SIGNALS
+# TAB 4: MARKET PULSE (Tsunami, QGLP, Sectors)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-with tabs[4]:
-    st.markdown(f"<div class='sec-head'>🌊 Tsunami Signals — Maximum Conviction Setups</div>", unsafe_allow_html=True)
+with tabs[3]:
+    st.markdown(f"<div class='sec-head'>🌊 Market Pulse — Alpha Strategies</div>", unsafe_allow_html=True)
+    
+    st.markdown("#### 🌊 Tsunami Signals (Max Conviction)")
     st.markdown(f"<div class='sec-cap'>Stocks where ALL conviction layers fire simultaneously: Quality + Momentum + Governance + Technical</div>", unsafe_allow_html=True)
 
     tsunami_df = df[df["tsunami_signal"] == 1].sort_values("composite_score", ascending=False)
@@ -489,11 +442,8 @@ with tabs[4]:
             render_stock_card(row, show_scores=True)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# TAB 6: QGLP COMPOUNDERS (MOTILAL OSWAL)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-with tabs[5]:
-    st.markdown(f"<div class='sec-head'>🏛️ QGLP Compounders (Motilal Oswal Framework)</div>", unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown("#### 🏛️ QGLP Compounders (Motilal Oswal Framework)")
     st.markdown(f"<div class='sec-cap'>Quality + Growth + Longevity + Price. Exclusive to strictly vetted compounders with ROCE > 15%, EPS/PAT Growth > 15%, and reasonable valuations.</div>", unsafe_allow_html=True)
     
     qglp_df = filt[filt["qglp_pass"] == 1].sort_values("qglp_score", ascending=False)
@@ -517,11 +467,8 @@ with tabs[5]:
                      })
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# TAB 7: SECTOR INTELLIGENCE
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-with tabs[6]:
-    st.markdown(f"<div class='sec-head'>📈 Sector Intelligence</div>", unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown(f"#### 📈 Sector Intelligence", unsafe_allow_html=True)
     qual_df = df[df["gate_pass"] == 1]
 
     if len(qual_df) > 0:
@@ -554,9 +501,9 @@ with tabs[6]:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# TAB 8: CONFIGURATION
+# TAB 5: CONFIGURATION
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-with tabs[7]:
+with tabs[4]:
     st.markdown(f"<div class='sec-head'>⚙️ System Configuration</div>", unsafe_allow_html=True)
     st.markdown(f"<div class='sec-cap'>Current scoring weights and gate thresholds. Modify config.py to adjust.</div>", unsafe_allow_html=True)
 
