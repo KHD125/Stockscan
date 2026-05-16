@@ -532,9 +532,145 @@ def compute_derived_signals(df: pd.DataFrame) -> pd.DataFrame:
     # Net debt negative flag (fortress balance sheet)
     df["net_debt_negative"] = (df["net_debt"] < 0).astype(int)
 
+    # ══════════════════════════════════════════════════════════════
+    # DR. VIJAY MALIK SIGNALS (Peaceful Investing Codex)
+    # ══════════════════════════════════════════════════════════════
+
+    # ── SSGR Approximation (Ch.2) ──
+    # SSGR = NFAT × NPM × (1 − DPR) − Dep_Rate
+    # With annual data only, we approximate using 1-year figures.
+    # DPR is approximated as 0.25 (typical Indian payout) when not available.
+    nfat = np.where(
+        df["fixed_assets"].notna() & (df["fixed_assets"] > 0),
+        df["revenue"] / df["fixed_assets"],
+        np.nan
+    )
+    npm_decimal = df["npm"].fillna(0) / 100.0
+    dpr_approx = 0.25  # conservative assumption
+    dep_rate = np.where(
+        df["fixed_assets"].notna() & (df["fixed_assets"] > 0) &
+        df["fixed_assets_1yb"].notna(),
+        # Depreciation ≈ (Fixed Assets 1YB - Fixed Assets + Capex additions)
+        # Capex ≈ |Investing Cash Flow| as proxy
+        np.abs(df["investing_cash_flow"].fillna(0)) / df["fixed_assets"],
+        np.nan
+    )
+    df["ssgr"] = pd.Series(
+        nfat * npm_decimal * (1 - dpr_approx) - dep_rate,
+        index=df.index
+    ) * 100  # convert to percentage
+
+    # SSGR vs actual growth — the gold standard test
+    df["ssgr_cushion"] = df["ssgr"] - df["rev_gr_5y"].fillna(df["rev_gr_3y"])
+    df["ssgr_self_funded"] = (df["ssgr_cushion"] > 0).astype(int)
+
+    # ── Economic Profit (28th WCS) ──
+    # EP = Net Worth × (RoE − Cost of Equity)
+    # Cost of Equity ≈ 10% for India
+    cost_of_equity = 10.0
+    # Net Worth ≈ Market Cap / PB ratio. If PB not available, use reserves.
+    net_worth = np.where(
+        df["pe"].notna() & (df["pe"] > 0) & df["roe"].notna() & (df["roe"] > 0),
+        df["market_cap"] / (df["pe"] * df["roe"] / (df["pat"].fillna(1).clip(lower=0.01))),
+        df["reserves"].fillna(0)
+    )
+    # Simpler: Net Worth ≈ PAT / (ROE/100)
+    net_worth_simple = np.where(
+        df["roe"].notna() & (df["roe"] > 1),
+        df["pat"].fillna(0) / (df["roe"] / 100.0),
+        df["reserves"].fillna(0)
+    )
+    df["economic_profit"] = pd.Series(net_worth_simple, index=df.index) * (df["roe"].fillna(0) - cost_of_equity) / 100.0
+    df["economic_profit_positive"] = (df["economic_profit"] > 0).astype(int)
+
+    # ── High Cash + High Debt Flag (Malik Shenanigan 4) ──
+    # If company holds significant cash AND significant debt, why not repay?
+    df["high_cash_high_debt"] = (
+        (df["cash_equivalents"].fillna(0) > 0) &
+        (df["debt"].fillna(0) > 0) &
+        (df["cash_equivalents"].fillna(0) > df["debt"].fillna(0) * 0.3)
+    ).astype(int)
+
+    # ── Interest Coverage Proxy (Malik Parameter 4) ──
+    # Interest ≈ EBITDA - EBIT. If we don't have EBIT, use (EBITDA × OPM adjustment)
+    # Simpler: we have D/E and debt. Interest ≈ Debt × assumed rate (10%)
+    assumed_interest_rate = 0.10
+    df["interest_expense_est"] = df["debt"].fillna(0) * assumed_interest_rate
+    df["interest_coverage"] = np.where(
+        df["interest_expense_est"] > 0,
+        df["ebitda"].fillna(0) / df["interest_expense_est"],
+        99.0  # debt-free = effectively infinite coverage
+    )
+
+    # ── Malik 8-Parameter Checklist Score (Ch.4, 0-100) ──
+    # Each parameter scored 0 or 12.5 (8 params × 12.5 = 100)
+    pw = 12.5  # per-parameter weight
+
+    # P1: Sales Growth > 10% (>15% preferred)
+    malik_p1 = np.where(df["rev_gr_5y"].fillna(df["rev_gr_3y"]).fillna(0) >= 15, pw,
+               np.where(df["rev_gr_5y"].fillna(df["rev_gr_3y"]).fillna(0) >= 10, pw * 0.7, 0))
+
+    # P2: NPM > 8%, stable
+    malik_p2 = np.where(df["npm"].fillna(0) >= 8, pw,
+               np.where(df["npm"].fillna(0) >= 5, pw * 0.5, 0))
+
+    # P3: Tax Rate ~25-30% (we can't check this without explicit tax data, give partial)
+    malik_p3 = pw * 0.5  # conservative — assume partial pass
+
+    # P4: Interest Coverage > 3x
+    malik_p4 = np.where(df["interest_coverage"] >= 8, pw,
+               np.where(df["interest_coverage"] >= 3, pw * 0.7, 0))
+
+    # P5: D/E < 0.5
+    malik_p5 = np.where(df["debt_to_equity"].fillna(0) <= 0, pw,  # zero debt = gold
+               np.where(df["debt_to_equity"].fillna(0) <= 0.5, pw * 0.9,
+               np.where(df["debt_to_equity"].fillna(0) <= 1.0, pw * 0.5, 0)))
+
+    # P6: Current Ratio > 1.25
+    malik_p6 = np.where(df["current_ratio"].fillna(0) >= 1.5, pw,
+               np.where(df["current_ratio"].fillna(0) >= 1.25, pw * 0.7, 0))
+
+    # P7: CFO positive
+    malik_p7 = np.where(df["operating_cash_flow"].fillna(0) > 0, pw, 0)
+
+    # P8: CFO/PAT > 0.7 (cash confirms earnings)
+    malik_p8 = np.where(df["cfo_to_pat"].fillna(0) >= 1.0, pw,
+               np.where(df["cfo_to_pat"].fillna(0) >= 0.7, pw * 0.7, 0))
+
+    df["malik_score"] = pd.Series(
+        malik_p1 + malik_p2 + malik_p3 + malik_p4 +
+        malik_p5 + malik_p6 + malik_p7 + malik_p8,
+        index=df.index
+    ).clip(0, 100)
+
+    df["malik_label"] = np.select(
+        [df["malik_score"] >= 80, df["malik_score"] >= 60, df["malik_score"] >= 40],
+        ["🟢 Strong", "🟡 Moderate", "🟠 Weak"],
+        default="🔴 Poor"
+    )
+
+    # ── Moat-Growth Matrix (22nd WCS) ──
+    # Strong Moat = ROCE > 15%. High Growth = PAT CAGR > 15%
+    has_moat = df["roce_med_5y"].fillna(df["roce"]).fillna(0) >= 15
+    has_growth = df["pat_gr_5y"].fillna(df["pat_gr_3y"]).fillna(0) >= 15
+    df["moat_growth_quad"] = np.select(
+        [
+            has_moat & has_growth,
+            has_moat & ~has_growth,
+            ~has_moat & has_growth,
+        ],
+        [
+            "⭐ Wealth Creator",     # Strong Moat + High Growth
+            "🛡️ Quality Trap",       # Strong Moat + Low Growth
+            "⚡ Growth Trap",         # Weak Moat + High Growth
+        ],
+        default="💀 Wealth Destroyer"  # Weak Moat + Low Growth
+    )
+
     n_derived = len([c for c in df.columns if c not in set(COMMON_COLS.values())])
     print(f"  ✅ Computed all derived signals. Total columns: {len(df.columns)}")
     return df
+
 
 
 def fetch_and_clean_data(data_source: str = "local", uploaded_files: dict = None, sheet_id: str = None) -> pd.DataFrame:
