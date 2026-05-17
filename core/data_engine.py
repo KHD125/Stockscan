@@ -10,7 +10,7 @@ import pandas as pd
 import numpy as np
 import warnings
 from typing import Dict, Tuple, Optional
-from config import CSV_FILES, MCAP_TIERS, MCAP_MIN_FLOOR, FINANCIAL_SECTORS
+from config import CSV_FILES, MCAP_TIERS, MCAP_MIN_FLOOR, FINANCIAL_SECTORS, SSGR_DEP_RATES
 
 warnings.filterwarnings('ignore')
 np.seterr(all='ignore')
@@ -348,6 +348,17 @@ def compute_derived_signals(df: pd.DataFrame) -> pd.DataFrame:
     )
     df["ev_compression"] = df["ev_ebitda_1yb"] - df["ev_ebitda"]
     df["de_slope_3y"] = df["debt_to_equity"] - df["debt_to_equity_3yb"]
+
+    # ── Ind AS 116 / Debt Restatement Guard ──
+    # Sudden debt jumps from lease capitalization (Ind AS 116, 2019+) create non-economic D/E spikes.
+    # If D/E jumped >2.5× in 1 year but has since stabilised below 2Y-back level → likely restatement.
+    de_restatement = (
+        df["debt_to_equity_1yb"].notna() & df["debt_to_equity_2yb"].notna() &
+        (df["debt_to_equity_1yb"] > df["debt_to_equity"] * 2.5) &  # 1YB was >2.5× current
+        (df["debt_to_equity"] < df["debt_to_equity_2yb"])           # current < 2YB (normalised)
+    )
+    df["debt_restatement_suspected"] = de_restatement.astype(int)
+    df["de_slope_3y"] = np.where(de_restatement, np.nan, df["de_slope_3y"])  # neutralise spike
     # ── DILUTION: Percentage-based materiality (Fisher Point 13) ──
     # OLD APPROACH (BUG): Binary flag — any share increase = fail.
     #   This incorrectly killed companies for tiny ESOPs (0.1-0.5% dilution).
@@ -407,6 +418,17 @@ def compute_derived_signals(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # ── CASHFLOW DERIVED ──
+    # FCF imputation: ~600+ major stocks (HINDUNILVR, HCLTECH, INFY, etc.) have null FCF
+    # because the data provider lacks CapEx data. Without imputation, these stocks score at
+    # universe median (50th pct) for FCF yield despite massive positive cash generation.
+    # Conservative imputation: use OCF when FCF is null (treats all OCF as free cash — overstates
+    # FCF by ignoring CapEx, but far better than arbitrary 50th-pct neutral assignment).
+    if "free_cash_flow" in df.columns and "operating_cash_flow" in df.columns:
+        fcf_null_count = df["free_cash_flow"].isna().sum()
+        df["free_cash_flow"] = df["free_cash_flow"].fillna(df["operating_cash_flow"])
+        if fcf_null_count > 0:
+            print(f"  ℹ️  FCF imputed from OCF for {fcf_null_count} stocks with null FCF")
+
     df["fcf_yield"] = np.where(
         df["market_cap"].notna() & (df["market_cap"] > 0),
         df["free_cash_flow"] / df["market_cap"] * 100,  # as percentage
@@ -516,9 +538,19 @@ def compute_derived_signals(df: pd.DataFrame) -> pd.DataFrame:
     df["crs_aligned"] = (
         (df["crs_50d"] > 0) & (df["crs_26w"] > 0) & (df["crs_52w"] > 0)
     ).astype(int)
-    df["vstop_fresh"] = (df["last_vstop_change"] <= 30).astype(int)
+    # VSTOP scale guard: nullify implausible VSTOP values (>50× or <2% of close price).
+    # Upstream data sources sometimes publish VSTOP in paise for certain stocks (e.g. MOTHERSON: VSTOP=7684 vs price=130).
+    if "vstop_value" in df.columns and "close_price" in df.columns:
+        vstop_ratio = df["vstop_value"].fillna(0) / df["close_price"].replace(0, np.nan)
+        implausible_vstop = (vstop_ratio > 50) | (vstop_ratio < 0.02)
+        df.loc[implausible_vstop, "vstop_value"] = np.nan
+        implausible_count = int(implausible_vstop.sum())
+        if implausible_count > 0:
+            print(f"  ⚠️  VSTOP scale mismatch nullified for {implausible_count} stocks")
+
+    df["vstop_fresh"] = np.where(df["last_vstop_change"].notna(), (df["last_vstop_change"] <= 30).astype(int), 0)
     df["above_sma200"] = (df["close_price"] > df["sma_200d"]).astype(int)
-    df["vstop_green"] = (df["close_price"] > df["vstop_value"]).astype(int)
+    df["vstop_green"] = np.where(df["vstop_value"].notna(), (df["close_price"] > df["vstop_value"]).astype(int), 0)
 
     # ── VQS & SMART MONEY FLOW (WAVE DETECTION INTEGRATION) ──
     vqs_liquidity = np.where(df["vol_ratio"] >= 3.0, 50,
@@ -610,16 +642,18 @@ def compute_derived_signals(df: pd.DataFrame) -> pd.DataFrame:
     npm_pct = df["npm"].fillna(0)
 
     nfat = np.where(fa > 0, rev / fa, np.nan)
+    df["nfat"] = pd.Series(nfat, index=df.index)  # Net Fixed Asset Turnover — Vijay Malik capital-light signal
     npm_decimal = npm_pct / 100.0
     dpr_approx = 0.25
 
-    # Depreciation rate: approximate from fixed asset changes
-    # If FA grew: Dep ≈ (FA_1YB + Capex - FA) / FA, where Capex ≈ FA - FA_1YB + Dep
-    # Simplified: Dep_Rate ≈ avg depreciation rate for Indian cos = ~8-12% of FA
-    # Better: Dep ≈ (EBITDA - PAT) × fraction, but noisy.
-    # BEST with our data: Dep_Rate = change in FA as ratio.
-    # If FA_1YB > 0: depreciation_est = max(0, FA_1YB * 0.10) as typical 10% dep
-    dep_rate = np.where(fa > 0, 0.10, 0.0)  # 10% standard depreciation rate
+    # Depreciation rate: sector-specific lookup (Indian Companies Act Schedule II + industry norms).
+    # IT/Software: 25% (3-4yr useful life). Infrastructure: 4% (25yr+ assets). Default: 10%.
+    default_dep = SSGR_DEP_RATES["_default"]
+    if "industry" in df.columns:
+        sector_dep = df["industry"].map(SSGR_DEP_RATES).fillna(default_dep)
+    else:
+        sector_dep = pd.Series(default_dep, index=df.index)
+    dep_rate = np.where(fa > 0, sector_dep, 0.0)
 
     ssgr_raw = nfat * npm_decimal * (1 - dpr_approx) - dep_rate
     df["ssgr"] = pd.Series(ssgr_raw * 100, index=df.index).clip(-50, 100)
@@ -629,19 +663,22 @@ def compute_derived_signals(df: pd.DataFrame) -> pd.DataFrame:
     df["ssgr_cushion"] = df["ssgr"] - actual_growth
     df["ssgr_self_funded"] = (df["ssgr_cushion"] > 0).astype(int)
 
-    # ── Tax Rate Estimation (Malik Parameter 3) ──
-    # Tax ≈ (EBITDA - Interest - PAT) / (EBITDA - Interest)
-    # Simplified: Tax ≈ 1 - (PAT / EBITDA) when EBITDA > PAT > 0
-    df["tax_rate_est"] = np.where(
+    # ── EBITDA-to-PAT Gap % (Malik Parameter 3 proxy) ──
+    # Formula: (EBITDA - PAT) / EBITDA × 100 = (Dep + Interest + Tax) / EBITDA
+    # NOTE: This is NOT effective tax rate — it includes depreciation and interest.
+    # Renamed from "tax_rate_est" to avoid confusion. Malik P3 band is widened to 30-55%
+    # to account for the systematic overestimation vs true effective tax rate (~22-28%).
+    df["ebitda_to_pat_gap_pct"] = np.where(
         (df["ebitda"].fillna(0) > 0) & (df["pat"].fillna(0) > 0) &
         (df["ebitda"].fillna(0) > df["pat"].fillna(0)),
         (1 - df["pat"] / df["ebitda"]) * 100,
         np.nan
     )
+    df["tax_rate_est"] = df["ebitda_to_pat_gap_pct"]  # backward-compat alias
 
     # ── Interest Coverage Proxy (Malik Parameter 4) ──
-    # Interest ≈ Debt × assumed rate (10%)
-    assumed_interest_rate = 0.10
+    # Interest ≈ Debt × assumed rate. India investment-grade corporate average ~8.5% (not 10%).
+    assumed_interest_rate = 0.085
     df["interest_expense_est"] = df["debt"].fillna(0) * assumed_interest_rate
     df["interest_coverage"] = np.where(
         df["interest_expense_est"] > 0,
@@ -790,6 +827,345 @@ def compute_derived_signals(df: pd.DataFrame) -> pd.DataFrame:
         (df["cwip_conversion"].fillna(0) > 0) &  # CWIP converted to assets
         (df["rev_gr_yoy"].fillna(0) > 0)           # AND revenue grew
     ).astype(int)
+
+    # ══════════════════════════════════════════════════════════════
+    # HANDBOOK DERIVED SIGNALS (D04–D50)
+    # Complete set from Multibagger Discovery Handbook V2.
+    # These power the GOD Screen scoring, catalyst flags, and UI display.
+    # ══════════════════════════════════════════════════════════════
+
+    # ── D04: Expense Growth YoY (%) ──
+    df["d04_expense_gr_yoy"] = np.where(
+        df["expenses_1yb"].notna() & (df["expenses_1yb"].abs() > 0),
+        (df["expenses"] - df["expenses_1yb"]) / df["expenses_1yb"].abs() * 100,
+        np.nan
+    )
+
+    # ── D05: Revenue Minus Expense Growth (Operating Leverage Signal) ──
+    # D05 > 0: Revenue outpacing costs = margin expansion = quality growth
+    # D05 > 5: Meaningful operating leverage
+    # D05 > 10: Strong operating leverage → OPERATING LEVERAGE INFLECTION catalyst
+    df["d05_rev_minus_exp_gr"] = np.where(
+        df["rev_gr_yoy"].notna() & df["d04_expense_gr_yoy"].notna(),
+        df["rev_gr_yoy"] - df["d04_expense_gr_yoy"],
+        np.nan
+    )
+
+    # ── D09: Annual NPM Expansion (current NPM vs 1Y back) ──
+    # Different from npm_acceleration (which uses latest quarter)
+    df["d09_npm_expansion"] = df["npm"] - df["npm_1yb"]
+
+    # ── D11: NPM vs 5Y Median ──
+    df["d11_npm_above_5y_med"] = df["npm"] - df["npm_med_5y"]
+
+    # ── D12: Debt Growth 1Y (%) ──
+    df["d12_debt_gr_1y"] = np.where(
+        df["debt_1yb"].notna() & (df["debt_1yb"].abs() > 0),
+        (df["debt"] - df["debt_1yb"]) / df["debt_1yb"].abs() * 100,
+        np.nan
+    )
+
+    # ── D13: Debt Growth 3Y (%) ──
+    df["d13_debt_gr_3y"] = np.where(
+        df["debt_3yb"].notna() & (df["debt_3yb"].abs() > 0),
+        (df["debt"] - df["debt_3yb"]) / df["debt_3yb"].abs() * 100,
+        np.nan
+    )
+
+    # ── D14: Debt Trajectory Score (0–3) — consecutive declining debt years ──
+    # Pabrai's downside protection: D14 = 3 means debt fell every year for 3 years
+    _d14_y1 = (df["debt"].fillna(0) < df["debt_1yb"].fillna(0)).astype(int)
+    _d14_y2 = (df["debt_1yb"].fillna(0) < df["debt_2yb"].fillna(0)).astype(int)
+    _d14_y3 = (df["debt_2yb"].fillna(0) < df["debt_3yb"].fillna(0)).astype(int)
+    df["d14_debt_trajectory"] = _d14_y1 + _d14_y2 + _d14_y3
+
+    # ── D15: Cash-to-Debt Ratio ──
+    df["d15_cash_to_debt"] = np.where(
+        df["debt"].notna() & (df["debt"] > 0),
+        df["cash_equivalents"].fillna(0) / df["debt"],
+        np.nan
+    )
+
+    # ── D17: Cash Growth YoY (%) ──
+    df["d17_cash_gr_yoy"] = np.where(
+        df["cash_equivalents_1yb"].notna() & (df["cash_equivalents_1yb"].abs() > 0),
+        (df["cash_equivalents"] - df["cash_equivalents_1yb"]) / df["cash_equivalents_1yb"].abs() * 100,
+        np.nan
+    )
+
+    # ── D19 FIX: CWIP Conversion (full formula — CWIP → Fixed Assets) ──
+    # Correct formula: (CWIP_1YB - CWIP) + (FA - FA_1YB)
+    # = CWIP that disappeared + Fixed assets that appeared = capital going live
+    df["d19_cwip_conversion"] = (
+        (df["cwip_1yb"].fillna(0) - df["cwip"].fillna(0)) +
+        (df["fixed_assets"].fillna(0) - df["fixed_assets_1yb"].fillna(0))
+    )
+    df["cwip_conversion"] = df["d19_cwip_conversion"]  # replace incomplete formula
+
+    # ── D20: Fixed Asset CAGR 3Y (%) ──
+    df["d20_fa_cagr_3y"] = np.where(
+        df["fixed_assets_3yb"].notna() & (df["fixed_assets_3yb"] > 0) & (df["fixed_assets"].fillna(0) > 0),
+        ((df["fixed_assets"] / df["fixed_assets_3yb"]) ** (1.0 / 3.0) - 1.0) * 100,
+        np.nan
+    )
+
+    # ── D24: OCF/PAT Delta (CFO/PAT − 100) ──
+    # D24 ≥ 0: OCF ≥ PAT = earnings are cash-backed (Clean Accounts signal)
+    df["d24_ocf_pat_delta"] = df["cfo_to_pat"].fillna(np.nan) - 100.0
+
+    # ── D27: FCF Positive (binary) ──
+    df["d27_fcf_positive"] = (df["free_cash_flow"].fillna(0) > 0).astype(int)
+
+    # ── D28: FCF-to-PAT (%) ──
+    # D28 > 50%: FCF covers more than half of PAT = strong real cash generation
+    df["d28_fcf_to_pat_pct"] = np.where(
+        df["pat"].notna() & (df["pat"].abs() > 0),
+        df["free_cash_flow"].fillna(0) / df["pat"].abs() * 100,
+        np.nan
+    )
+
+    # ── D29: Capex Intensity (%) ──
+    # (OCF − FCF) / |OCF| × 100: how much of operating cash goes to capex
+    df["d29_capex_intensity"] = np.where(
+        df["operating_cash_flow"].notna() & (df["operating_cash_flow"].abs() > 0),
+        (df["operating_cash_flow"] - df["free_cash_flow"].fillna(df["operating_cash_flow"])) /
+        df["operating_cash_flow"].abs() * 100,
+        np.nan
+    )
+
+    # ── D32: PE vs 10Y Median (%) — negative = trading below own history ──
+    df["d32_pe_vs_median"] = np.where(
+        df["pe_med_10y"].notna() & (df["pe_med_10y"] > 0) & df["pe"].notna(),
+        (df["pe"] - df["pe_med_10y"]) / df["pe_med_10y"] * 100,
+        np.nan
+    )
+
+    # ── D33: PE vs Industry (%) — negative = cheap vs sector peers ──
+    df["d33_pe_vs_industry"] = np.where(
+        df["industry_pe"].notna() & (df["industry_pe"] > 0) & df["pe"].notna(),
+        (df["pe"] - df["industry_pe"]) / df["industry_pe"] * 100,
+        np.nan
+    )
+
+    # ── D34: EV/EBITDA Direction — positive = getting more expensive ──
+    df["d34_ev_ebitda_dir"] = df["ev_ebitda"] - df["ev_ebitda_1yb"]
+
+    # ── D35: ROCE Trend (current vs 1Y back) — positive = improving ──
+    df["d35_roce_trend"] = df["roce"] - df["roce_1yb"]
+
+    # ── D36: ROCE vs 5Y Median — positive = above historical average ──
+    df["d36_roce_above_med"] = df["roce"] - df["roce_med_5y"]
+
+    # ── D37: CCC Direction (positive = worsening working capital) ──
+    df["d37_ccc_direction"] = df["ccc"] - df["ccc_1yb"]
+
+    # ── D38: Smart Money (Promoter LQ + FII LQ change) ──
+    df["d38_smart_money"] = (
+        df["change_promoter_lq"].fillna(0) + df["change_fii_lq"].fillna(0)
+    )
+
+    # ── D39: Institutional Tide (FII + DII latest quarter change) ──
+    df["d39_inst_tide"] = (
+        df["change_fii_lq"].fillna(0) + df["change_dii_lq"].fillna(0)
+    )
+
+    # ── D40: Promoter + FII 1Y change ──
+    df["d40_promo_fii_1y"] = (
+        df["change_promoter_1y"].fillna(0) + df["change_fii_1y"].fillna(0)
+    )
+
+    # ── D41: Pledge Trajectory (positive = pledge rising = danger) ──
+    df["d41_pledge_trajectory"] = df["pledged_percentage"].fillna(0) - df["pledged_1yb"].fillna(0)
+
+    # ── D44: Smart Money Composite (D38 + D39 + 2 if insider bought) ──
+    insider_bought = (
+        df["insider_trading"].notna() &
+        df["insider_trading"].str.contains("Bought", case=False, na=False)
+    ).astype(float) * 2
+    df["d44_smart_money_comp"] = df["d38_smart_money"] + df["d39_inst_tide"] + insider_bought
+
+    # ── D45: Trend Structure Score (0–3) ──
+    # +1 if Price > SMA 200D, +1 if Price > VSTOP, +1 if ADX > 20
+    df["d45_trend_structure"] = (
+        df["above_sma200"].fillna(0) +
+        df["vstop_green"].fillna(0) +
+        (df["adx_14w"].fillna(0) > 20).astype(int)
+    )
+
+    # ── D47: RS Composite (average of 3 CRS timeframes) ──
+    # Lower is better (closer to 0 or negative = underperforming = bearish)
+    # But for universe ranking, a higher CRS composite = stronger relative strength
+    df["d47_rs_composite"] = (
+        df["crs_50d"].fillna(0) + df["crs_26w"].fillna(0) + df["crs_52w"].fillna(0)
+    ) / 3.0
+
+    # ── D48: Breakout Readiness (categorical) ──
+    df["d48_breakout_readiness"] = np.select(
+        [
+            (df["dist_52wh"].fillna(999) < 10) & (df["dist_13wh"].fillna(999) < 5),
+            df["dist_52wh"].fillna(999) < 20,
+        ],
+        ["IMMINENT", "NEAR"],
+        default="FAR"
+    )
+
+    # ── D49: Momentum Quality (categorical) ──
+    df["d49_momentum_quality"] = np.select(
+        [
+            df["rsi_14d"].fillna(0) > 70,
+            (df["rsi_14d"].fillna(0) >= 50) & (df["rsi_14d"].fillna(0) <= 70) & (df["adx_14w"].fillna(0) > 20),
+        ],
+        ["OVERHEATED", "HIGH"],
+        default="WEAK"
+    )
+
+    # ── D50: Alpha Score (average return vs benchmarks) ──
+    df["d50_alpha_score"] = (
+        df["ret_vs_n500_3m"].fillna(0) +
+        df["ret_vs_n500_6m"].fillna(0) +
+        df["ret_vs_industry_1y"].fillna(0)
+    ) / 3.0
+
+    # ══════════════════════════════════════════════════════════════
+    # MOTILAL OSWAL 30-STUDY ALPHA SIGNALS
+    # Derived from 30 Annual Wealth Creation Studies (1991-2025).
+    # These are the empirically most-validated signals in Indian equity research.
+    # ══════════════════════════════════════════════════════════════
+
+    # ── Payback Ratio (MOSL's single most validated supernormal-return predictor) ──
+    # "Payback Ratio < 1x is the most reliable valuation metric for supernormal returns."
+    #   — confirmed in every one of the 30 Annual Wealth Creation Studies
+    # Conservative (0% growth): payback_0g = market_cap / (5 × current PAT)
+    # Growth-adjusted: market_cap / cumulative 5Y PAT at estimated CAGR
+    pat_safe = df["pat"].fillna(0).clip(lower=0.01)
+    payback_0g = np.where(
+        (df["market_cap"].fillna(0) > 0) & (df["pat"].fillna(0) > 0),
+        df["market_cap"] / (5.0 * pat_safe),
+        np.nan
+    )
+    df["payback_ratio_0g"] = pd.Series(payback_0g, index=df.index)
+
+    # Growth-adjusted: geometric sum of 5Y PAT at estimated CAGR (from pat_gr_5y)
+    g_rate = (df["pat_gr_5y"].fillna(0) / 100.0).clip(lower=0, upper=0.50)
+    geo_sum = np.where(
+        g_rate > 0.001,
+        ((1.0 + g_rate) ** 5 - 1.0) / g_rate,
+        5.0
+    )
+    payback_growth = np.where(
+        (df["market_cap"].fillna(0) > 0) & (df["pat"].fillna(0) > 0),
+        df["market_cap"] / (pat_safe * pd.Series(geo_sum, index=df.index)),
+        np.nan
+    )
+    df["payback_ratio"] = pd.Series(payback_growth, index=df.index)
+    df["payback_lt1"] = (df["payback_ratio"].fillna(99) < 1.0).astype(int)   # supernormal returns zone
+    df["payback_lt2"] = (df["payback_ratio"].fillna(99) < 2.0).astype(int)   # attractive zone
+
+    # ── Consistency Champion (27th Study: Consistents vs Volatiles) ──
+    # Full 15Y analysis requires 15 years of annual PAT — not in CSV.
+    # Proxy using available history: no PAT crash + long-term positive trajectory.
+    pat_decline_1y = np.where(
+        df["pat_1yb"].fillna(0) > 0,
+        (df["pat"].fillna(0) - df["pat_1yb"].fillna(0)) / df["pat_1yb"].abs() * 100,
+        0.0
+    )
+    df["pat_decline_1y_pct"] = pd.Series(pat_decline_1y, index=df.index)
+    df["pat_no_crash_1y"] = (df["pat_decline_1y_pct"].fillna(0) > -50).astype(int)
+    df["pat_growing_long"] = (
+        df["pat_gr_10y"].fillna(df["pat_gr_5y"]).fillna(0) > 0
+    ).astype(int)
+    df["consistency_champion"] = (
+        (df["pat_no_crash_1y"] == 1) &
+        (df["pat_growing_long"] == 1) &
+        (df["pat"].fillna(0) > 0)
+    ).astype(int)
+
+    # ── Economic Profit Improving (28th Study — TEM Hockey-Stick Setup) ──
+    # Companies moving UP the Economic Profit Power Curve:
+    # ROE improving AND above cost of equity (10% for India)
+    df["eco_profit_improving"] = (
+        (df["roe"].fillna(0) > df["roe_1yb"].fillna(0)) &
+        (df["roe"].fillna(0) > 10.0)
+    ).astype(int)
+
+    # ── P/E to Sustainable ROE Ratio (continuous MoS — 1st Study, all 30 confirmed) ──
+    # pe_to_roe_ratio < 1 = PE below sustainable ROE = inherent margin of safety
+    df["pe_to_roe_ratio"] = np.where(
+        df["roe_med_10y"].notna() & (df["roe_med_10y"] > 1) &
+        df["pe"].notna() & (df["pe"] > 0),
+        df["pe"] / df["roe_med_10y"],
+        np.nan
+    )
+
+    # ── Sector Tailwind (30th Study: India Multi-Trillion Dollar Opportunity) ──
+    # Financials + Consumer Discretionaries = explosive tipping-point sectors 2025-2040
+    _tailwind_patt = "Bank|NBFC|Insurance|Finance|Auto|Consumer|Health|Pharma|Retail|Capital Market"
+    df["sector_tailwind"] = (
+        df["industry"].str.contains(_tailwind_patt, case=False, na=False) |
+        df["sector"].str.contains(_tailwind_patt, case=False, na=False)
+    ).astype(int)
+
+    # ── Bruised Blue Chip Detection (29th Study) ──
+    # Quality company fallen hard + trading cheap vs own history = asymmetric payoff
+    # Criteria: quality company (ROCE > 15% + PAT CAGR > 10%) AND
+    #           fallen significantly (>40% off 52W high as proxy for 50%+ from 5Y high) AND
+    #           cheap vs own history (current PE > 25% below 10Y median PE)
+    _bbc_fallen   = df["dist_52wh"].fillna(0) > 40
+    _bbc_quality  = (
+        (df["roce_med_5y"].fillna(df["roce"]).fillna(0) >= 15) &
+        (df["pat_gr_5y"].fillna(0) >= 10)
+    )
+    _bbc_cheap    = df["d32_pe_vs_median"].fillna(0) < -25
+    df["bruised_blue_chip"] = (_bbc_fallen & _bbc_quality & _bbc_cheap).astype(int)
+
+    # ══════════════════════════════════════════════════════════════
+    # VIJAY MALIK PEACEFUL INVESTING SIGNALS (Vol 1–3 deep extraction)
+    # "Hard Gates" layer — capital efficiency, OPM consistency, cash conversion quality.
+    # ══════════════════════════════════════════════════════════════
+
+    # ── FCF/CFO Conversion Quality (Vijay Malik's single most diagnostic ratio) ──
+    # Finolex Cables: 76% — gold standard. PIX Transmissions: negative — capital trap.
+    # Captures what FCF/PAT misses: how much of operating cash survives after capex.
+    # Only meaningful when OCF is positive; when OCF < 0, rf_negative_fcf handles it.
+    df["fcf_to_cfo_pct"] = np.where(
+        df["operating_cash_flow"].notna() & (df["operating_cash_flow"] > 0),
+        df["free_cash_flow"].fillna(0) / df["operating_cash_flow"] * 100,
+        np.nan
+    )
+
+    # ── Inventory Days (complement to ITR already in CSV) ──
+    # Malik: <50 days = excellent, 50-80 = watch, >80 = red flag
+    df["inventory_days"] = np.where(
+        df["inventory_turnover"].notna() & (df["inventory_turnover"] > 0),
+        365.0 / df["inventory_turnover"],
+        np.nan
+    )
+
+    # ── OPM Stability (pricing power vs commodity trap) ──
+    # Vijay Malik: Maithan Alloys OPM swings 3% → 21% = no pricing power.
+    # Finolex Cables OPM stable 7→16% = structured improvement = pricing power.
+    # Stability = how far current OPM deviates from 5Y median (as % of median).
+    # Lower deviation = more stable = pricing power. >30% deviation = commodity trap.
+    df["opm_stability"] = np.where(
+        df["opm_med_5y"].notna() & (df["opm_med_5y"] > 0),
+        (df["opm_1yb"].fillna(df["opm_latest_q"]).fillna(df["opm_med_5y"]) -
+         df["opm_med_5y"]).abs() / df["opm_med_5y"] * 100,
+        np.nan
+    )
+    df["opm_stable"] = (df["opm_stability"].fillna(99) < 20).astype(int)
+
+    # ── WCS Score: Wealth Creation Criteria Count (0–7) ──
+    # Each criterion is a separately validated MOSL supernormal-return predictor.
+    # The more criteria met, the higher the probability of 5Y outperformance.
+    df["wcs_score"] = (
+        ((df["peg"].fillna(99) > 0) & (df["peg"].fillna(99) <= 1.0)).astype(int) +   # PEG < 1
+        df["pe_below_roe"].fillna(0).astype(int) +                                    # PE < ROE (MoS)
+        df["economic_profit_positive"].fillna(0).astype(int) +                        # EP > 0
+        (df["pat_gr_5y"].fillna(0) >= 20).astype(int) +                               # PAT CAGR > 20%
+        (df["roce_med_5y"].fillna(df["roce"]).fillna(0) >= 15).astype(int) +          # ROCE > 15% sustained
+        df["payback_lt1"].fillna(0).astype(int) +                                     # Payback < 1
+        df["consistency_champion"].fillna(0).astype(int)                              # PAT consistency
+    )
 
     n_derived = len([c for c in df.columns if c not in set(COMMON_COLS.values())])
     print(f"  ✅ Computed all derived signals. Total columns: {len(df.columns)}")
