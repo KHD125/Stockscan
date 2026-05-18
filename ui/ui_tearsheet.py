@@ -23,16 +23,18 @@ def render_moat_growth_matrix(df: pd.DataFrame, highlight_stock: str = None):
     plot_df["Moat_Y"] = plot_df["roce_med_5y"].fillna(plot_df["roce"]).fillna(0)
     plot_df["Growth_X"] = plot_df["pat_gr_5y"].fillna(plot_df["pat_gr_3y"]).fillna(0)
     
-    # Filter out extreme outliers for better visualization
-    plot_df = plot_df[(plot_df["Moat_Y"] > -20) & (plot_df["Moat_Y"] < 100)]
-    plot_df = plot_df[(plot_df["Growth_X"] > -40) & (plot_df["Growth_X"] < 150)]
-    
+    # G9 FIX: was dropping rows with Growth_X > 150%, hiding real multibagger candidates from matrix.
+    # Keep all data points; clip the viewport via Plotly axis range instead of deleting rows.
+    plot_df = plot_df[plot_df["Moat_Y"].notna() & plot_df["Growth_X"].notna()]
+
     if len(plot_df) == 0:
         st.warning("Not enough valid data to plot the matrix.")
         return
-        
+
+    x_max = min(float(plot_df["Growth_X"].max()) * 1.05, 300)  # viewport up to 300%, all points kept
+
     fig = px.scatter(
-        plot_df, x="Growth_X", y="Moat_Y", 
+        plot_df, x="Growth_X", y="Moat_Y",
         color="moat_growth_quad",
         color_discrete_map={
             "⭐ Wealth Creator": COLORS["green"],
@@ -78,8 +80,8 @@ def render_moat_growth_matrix(df: pd.DataFrame, highlight_stock: str = None):
         height=450,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
-    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor=COLORS["border"], zeroline=True, zerolinewidth=2, zerolinecolor=COLORS["border"])
-    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor=COLORS["border"], zeroline=True, zerolinewidth=2, zerolinecolor=COLORS["border"])
+    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor=COLORS["border"], zeroline=True, zerolinewidth=2, zerolinecolor=COLORS["border"], range=[-50, x_max])
+    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor=COLORS["border"], zeroline=True, zerolinewidth=2, zerolinecolor=COLORS["border"], range=[-25, 105])
     
     st.plotly_chart(fig, use_container_width=True)
 
@@ -124,11 +126,12 @@ def render_fisher_module(stock: pd.Series):
     p6_pass = npm >= npm_1yb and npm > 0
     proxies.append(("P6: Margin Trajectory (NPM ≥ Last Year)", p6_pass, "Improving" if p6_pass else "Declining"))
     
-    # 5. Cost Controls (Fisher P10) -> Expense Ratio decreasing
-    exp_ratio = stock.get("expense_ratio", 1)
-    exp_ratio_1yb = stock.get("expense_ratio_1yb", 1)
-    p10_pass = exp_ratio <= exp_ratio_1yb
-    proxies.append(("P10: Cost Controls (Expense Ratio Falling)", p10_pass, "Tighter" if p10_pass else "Looser"))
+    # 5. Accounting Controls (Fisher P10) -> CFO/PAT ≥ 70%
+    # Codex: "CFO should track PAT closely (80-120%). Consistently below 60% = earnings quality issue."
+    # cfo_to_pat is a PERCENTAGE in this CSV (73.04 = 73%). Threshold = 70, NOT 0.7.
+    cfo_pat = stock.get("cfo_to_pat", 0)
+    p10_pass = cfo_pat >= 70
+    proxies.append(("P10: Accounting Controls (CFO/PAT ≥70%)", p10_pass, f"{cfo_pat:.1f}%"))
     
     # 6. No Equity Dilution (Fisher P13)
     p13_pass = stock.get("dilution_flag", 1) == 0
