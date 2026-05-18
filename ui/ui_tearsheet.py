@@ -138,8 +138,8 @@ def render_fisher_module(stock: pd.Series):
     proxies.append(("P13: No Equity Dilution (Share Count Stable)", p13_pass, "Clean" if p13_pass else "Diluted"))
     
     # 7. Management Integrity (Fisher P15) -> Forensic Red Flags
-    p15_pass = stock.get("forensic_label", "") == "🟢 Clean"
-    proxies.append(("P15: Accounting Integrity (Zero Forensic Flags)", p15_pass, stock.get("forensic_label", "")))
+    p15_pass = stock.get("forensic_label", "") in ["🟢 Clean", "🟡 Watch"]
+    proxies.append(("P15: Accounting Integrity (Clean/Watch)", p15_pass, stock.get("forensic_label", "")))
 
     # Calculate Total Score
     passed = sum(1 for p in proxies if p[1])
