@@ -81,6 +81,7 @@ RATIO_COLS = {
     "Current Ratio 1 Year Back": "current_ratio_1yb",
     "ROA": "roa",
     "Equity Shares 1 Year Back": "equity_shares_1yb",
+    "Interest Coverage": "interest_coverage",
 }
 
 INCOME_COLS = {
@@ -693,7 +694,10 @@ def compute_derived_signals(df: pd.DataFrame) -> pd.DataFrame:
         ),
         index=df.index
     )
-    df["interest_coverage"] = df["interest_coverage"].fillna(synthetic_coverage)
+    if "interest_coverage" in df.columns:
+        df["interest_coverage"] = df["interest_coverage"].fillna(synthetic_coverage)
+    else:
+        df["interest_coverage"] = synthetic_coverage
 
     # ── Economic Profit (28th WCS) ──
     # EP = Net Worth × (RoE − Cost of Equity)
