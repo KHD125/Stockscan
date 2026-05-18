@@ -381,6 +381,14 @@ GOVERNANCE_BONUS = {
     "insider_trading_present": 15,   # directors buying
     "pledge_falling_1y":       10,   # pledge reduced over 1 year
     "undiscovered_alpha":      15,   # low FII + Tier C mcap
+    # Promoter holding alignment — Mayer 100-Bagger: present in 10/10 Indian 100-baggers.
+    # Rewards the BASELINE alignment level, not just quarterly buying activity.
+    # Dynasty mode (≥60%): founder's wealth IS the stock — decades-horizon thinking.
+    # Well-aligned (50-60%): meaningful skin in game without full dynasty mode.
+    # Selling from low base (<40% + declining): promoter telling you something the price hasn't yet reflected.
+    "promoter_high_alignment":  15,  # holdings ≥ 60%: dynasty mode
+    "promoter_good_alignment":   8,  # holdings 50-60%: well-aligned owner-operator
+    "promoter_low_declining":  -12,  # holdings < 40% AND falling 1Y: structural misalignment
     # Dilution penalties (negative — deducted from bonus)
     "dilution_tier2_penalty": -25,   # 3-10% dilution: significant governance failure
     "dilution_tier1_minor":    -5,   # <3% ESOP dilution: minor deduction vs zero-dilution
