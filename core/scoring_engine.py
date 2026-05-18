@@ -1078,7 +1078,7 @@ def compute_qglp_score(df: pd.DataFrame, profile: dict = None) -> pd.DataFrame:
     oplev_fi    = df.get("operating_leverage", pd.Series(0, index=df.index)).fillna(0)
     fscore_fi   = df.get("forensic_score",     pd.Series(999, index=df.index)).fillna(999)
     fw_fisher = (
-        (fscore_fi   == 0)                    &   # P15: Integrity — zero forensic flags (master filter)
+        (fscore_fi   >= 90)                    &   # P15: Integrity — clean or watch rating (<= 2 flags)
         (rev_gr_fi.fillna(0)  >= 15)          &   # P1:  Market growth ≥ 15% revenue CAGR
         (npm_fi.fillna(0)     >= 10)          &   # P5:  Worthwhile margin ≥ 10% NPM
         (npm_fi.fillna(0) >= npm_1yb_fi.fillna(0)) &  # P6:  Margins not declining vs prior year
