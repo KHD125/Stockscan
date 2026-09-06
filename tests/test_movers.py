@@ -326,9 +326,9 @@ def test_restrict_filters_every_section_by_current_id_but_never_dropped(res):
     assert res["n_both"] == 6, "restrict must not mutate the original count"
     assert r["restricted"] is True and not res.get("restricted"), "the restriction is not declared"
     assert r["churn"] == res["churn"], "churn cannot be recomputed from sections — it must stay universe-wide"
-    from ui.ui_movers import _churn_line
-    assert "whole universe" in _churn_line(r["churn"], True), "a filtered page hides the churn's real scope"
-    assert "whole universe" not in _churn_line(res["churn"], False)
+    from ui.ui_movers import _churn_bars
+    assert "whole universe" in _churn_bars(r["churn"], True), "a filtered page hides the churn's real scope"
+    assert "whole universe" not in _churn_bars(res["churn"], False)
 
 
 def test_material_direction_is_up_down_or_mixed(res):
@@ -529,9 +529,35 @@ def test_render_movers_renders_every_section_without_exception():
     assert not at.exception, f"render raised: {at.exception}"
     html = " ".join(m.value for m in at.markdown)
     for needle in ("FY27Q1 → FY27Q2", "regime changed", "Churn — share of stocks whose label changed",
-                   "wealth tier</b> 100%", "What matters", "Upgrades", "Climbers",
+                   "wealth tier", "width:100%", "What matters", "Upgrades", "Climbers",
                    "Red flags — rises", "Fresh results", "New to the universe"):
         assert needle in html, f"section/header {needle!r} missing from the render"
+
+
+def test_header_is_a_stat_row_with_churn_bars_and_the_explainer_in_a_tooltip():
+    """THE FOLD. Measured live: seven controls and ~280 words sat above the first data row, and
+    ⭐ What matters started ~900px down on a 732px viewport. The header is now a compact stat
+    row, churn is four BARS (read in a glance, not a sentence), the same-engine explainer lives
+    in an ⓘ tooltip rather than permanent prose, and the compare time folds into the header."""
+    from streamlit.testing.v1 import AppTest
+    src = open(_MOV, encoding="utf-8").read()
+    hdr = src[src.index("def render_movers("):src.index('_section("⭐ What matters')]
+    # source: the explainer text is bound to `tip` and emitted ONLY through a title= attribute
+    assert 'tip = ("Both sides were scored by the same engine' in hdr, "the explainer text moved or changed"
+    assert "title='{tip}'" in hdr, "the same-engine explainer must be a tooltip (title=), not visible prose"
+    assert hdr.count("{tip}") == 1, "the explainer is emitted somewhere besides the tooltip"
+    assert "Both sides scored by the" not in hdr, "the old paragraph form is back"
+    assert "_churn_bars(" in hdr and "def _churn_bars(" in src, "churn is not rendered as bars"
+    bars = src[src.index("def _churn_bars("):src.index("def render_movers(")]
+    assert "width:{pct:.0f}%" in bars and "height:6px" in bars, "no bar element per churn label"
+    assert "(whole universe" in bars, "the restricted-scope note left the churn block"
+    assert 'meta.get("elapsed")' in hdr and "compared in" in hdr, "the compare time does not fold into the header"
+    # and it renders: the tooltip is in the DOM as an attribute, the bars carry the percentages
+    at = AppTest.from_function(_movers_app)
+    at.run(timeout=30)
+    html = " ".join(m.value for m in at.markdown)
+    assert "title='Both sides were scored by the same engine" in html
+    assert html.count("height:6px;background:") >= 4, "fewer than four churn bars rendered"
     out = [t.value for t in at.text]
     assert "UP=['Alpha']" in out
     assert "PICKED=None" in out, "with no row clicked the module must return None, never a default pick"
@@ -563,7 +589,7 @@ def test_truncation_is_stated_never_silent():
     i = src.index("def _section(")
     body = src[i:src.index("def _block(")]
     assert "showing {shown} of {n:,}" in body, "the truncation disclosure is gone from the section header"
-    blk = src[src.index("def _block("):src.index("def _churn_line(")]
+    blk = src[src.index("def _block("):src.index("def _churn_bars(")]
     assert "shown=min(len(df), limit)" in blk, "_block no longer tells the header how much is shown"
     star = src[src.index('_section("⭐ What matters'):src.index("picked = _table(")]
     assert "shown=min(len(mat), 40)" in star, "the star section hides its own truncation"

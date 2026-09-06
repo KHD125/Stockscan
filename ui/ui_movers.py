@@ -479,19 +479,32 @@ def _block(title: str, df: pd.DataFrame, note: str = "", limit: int = 40) -> Non
     _table(df, limit=limit)
 
 
-def _churn_line(churn: dict, restricted: bool = False) -> str:
-    """The header's first line: what share of comparable stocks changed, per label. High churn is
-    a fact about the ENGINE's label stability — 47% of wealth tiers flipping in one quarter says
-    the thresholds sit where small data changes cross them — and it belongs at the top."""
+def _churn_bars(churn: dict, restricted: bool = False) -> str:
+    """Churn as four small BARS, not a sentence: what share of comparable stocks changed, per
+    label. It is the page's most important number — 47% of wealth tiers flipping in one quarter
+    is a fact about the ENGINE's label stability — and a bar reads in a glance where
+    "47% · 7% · 80% · 17%" needs a sentence. When the page is lens-restricted the rate is still
+    the whole universe's (it cannot be recomputed from section frames) and says so."""
     if not churn:
         return ""
     names = {"wealth_tier": "wealth tier", "verdict_direction": "soundness",
              "red_flag_count": "red-flag count", "gate_pass": "gate"}
-    bits = [f"<b>{names[k]}</b> {v:.0%}" for k, v in churn.items() if k in names and v == v]
-    scope = (f" <span style='font-weight:400;color:{COLORS['gold']};'>(whole universe — the lens "
-             f"filter below does not narrow this)</span>" if restricted else "")
-    return (f"<div style='color:{COLORS['text_primary']};font-weight:700;margin-top:8px;'>"
-            f"Churn — share of stocks whose label changed: " + " · ".join(bits) + scope + "</div>")
+    cells = []
+    for k, v in churn.items():
+        if k not in names or v != v:
+            continue
+        pct = max(0.0, min(100.0, float(v) * 100.0))
+        cells.append(
+            f"<div style='min-width:150px;'>"
+            f"<div style='display:flex;justify-content:space-between;font-size:0.66rem;color:{COLORS['text_muted']};'>"
+            f"<span>{names[k]}</span><b style='color:{COLORS['text_primary']};'>{v:.0%}</b></div>"
+            f"<div style='height:6px;border-radius:3px;background:{COLORS['bg_tertiary']};overflow:hidden;'>"
+            f"<div style='width:{pct:.0f}%;height:6px;background:{COLORS['purple']};'></div></div></div>")
+    scope = (f" <span style='font-weight:400;color:{COLORS['gold']};'>(whole universe — the lens filter "
+             f"below does not narrow this)</span>" if restricted else "")
+    return (f"<div style='margin-top:8px;'><div style='font-size:0.7rem;font-weight:700;"
+            f"color:{COLORS['text_primary']};margin-bottom:4px;'>Churn — share of stocks whose label changed"
+            f"{scope}</div><div style='display:flex;gap:16px;flex-wrap:wrap;'>" + "".join(cells) + "</div></div>")
 
 
 def render_movers(res: dict, meta: dict):
@@ -504,30 +517,40 @@ def render_movers(res: dict, meta: dict):
     stateless while still closing the loop from a mover to its full analysis."""
     c = res["counts"]
     same_engine = meta.get("prev_engine", meta.get("engine")) == meta.get("engine")
-    regime_note = ("" if meta.get("prev_regime") == meta.get("cur_regime") else
-                   f" — <b>regime changed</b> ({meta.get('prev_regime')} → {meta.get('cur_regime')}): with the "
-                   f"adaptive profile every composite shifts with it, so read rank and label moves first")
+    regime_changed = meta.get("prev_regime") != meta.get("cur_regime")
+    # THE EXPLAINER IS A TOOLTIP. It was two lines of permanent prose on every render; measured,
+    # ~280 words sat above the first data row. The ⓘ carries it for whoever wants it.
+    tip = ("Both sides were scored by the same engine, moments apart, so every move below is the "
+           "company changing, never PRISM changing."
+           + (" The regime changed between the vintages: with the adaptive profile every composite "
+              "shifts with it, so read rank and label moves first." if regime_changed else ""))
+    elapsed = meta.get("elapsed")
+    muted, strong = COLORS["text_muted"], COLORS["text_primary"]
+
+    def cell(label, value, tone=None):
+        return (f"<span style='white-space:nowrap;'><span style='font-size:0.62rem;color:{muted};"
+                f"text-transform:uppercase;letter-spacing:0.5px;'>{label}</span> "
+                f"<b style='color:{tone or strong};'>{value}</b></span>")
+
     st.markdown(
         f"<div style='background:{COLORS['bg_secondary']};border:1px solid {COLORS['border']};"
-        f"border-radius:10px;padding:10px 14px;margin:6px 0 10px 0;font-size:0.76rem;line-height:1.6;'>"
-        f"<div style='display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline;'>"
-        f"<span style='font-size:1rem;font-weight:800;color:{COLORS['text_primary']};'>"
-        f"{meta['prev_label']} → {meta['cur_label']}</span>"
-        f"<span style='color:{COLORS['text_muted']};'>{meta['prev_vintage']} → {meta['cur_vintage']}</span>"
-        f"<span style='color:{COLORS['text_muted']};'>{res['n_both']:,} stocks on both sides · "
-        f"{c['new']} new · {c['dropped']} dropped</span>"
-        f"<span style='color:{COLORS['text_muted']};'>engine {meta.get('engine', 'unknown')}"
-        f"{'' if same_engine else ' ⚠ differs'} · {meta.get('mode', '')}/{meta.get('profile', '')}</span>"
-        f"<span style='color:{COLORS['text_muted']};'>regime {meta.get('prev_regime', '?')} → {meta.get('cur_regime', '?')}</span>"
+        f"border-radius:10px;padding:8px 14px;margin:6px 0 8px 0;font-size:0.76rem;line-height:1.55;'>"
+        f"<div style='display:flex;flex-wrap:wrap;gap:4px 20px;align-items:baseline;'>"
+        f"<span style='font-size:1.05rem;font-weight:800;color:{strong};'>{meta['prev_label']} → {meta['cur_label']}</span>"
+        + cell("vintages", f"{meta['prev_vintage']} → {meta['cur_vintage']}")
+        + cell("comparable", f"{res['n_both']:,}") + cell("new", c["new"]) + cell("dropped", c["dropped"])
+        + cell("engine", f"{meta.get('engine', 'unknown')}{'' if same_engine else ' ⚠ differs'}")
+        + cell("mode", f"{meta.get('mode', '')}/{meta.get('profile', '')}")
+        + cell("regime", f"{meta.get('prev_regime', '?')} → {meta.get('cur_regime', '?')}"
+                         + (" ⚠ regime changed" if regime_changed else ""),
+               COLORS["gold"] if regime_changed else None)
+        + (cell("compared in", f"{elapsed:.0f}s") if elapsed is not None else "")
+        + f"<span title='{tip}' style='cursor:help;color:{COLORS['blue']};font-weight:700;white-space:nowrap;'>ⓘ same engine</span>"
         f"</div>"
-        + _churn_line(res.get("churn", {}), bool(res.get("restricted")))
-        + f"<div style='color:{COLORS['text_secondary']};margin-top:6px;'>Both sides scored by the "
-        f"<b>same engine, moments apart</b>, so every move below is the company changing — never PRISM "
-        f"changing{regime_note}.</div>"
-        + (f"<div style='color:{COLORS['gold']};margin-top:4px;'>⚠️ <b>Cash-flow caveat.</b> Cash-flow "
-           f"statements are filed half-yearly, so cash-driven signals (Cash Machine, CFO/EBITDA, the accrual "
-           f"flags) genuinely refresh only in the June and December vintages — a change in them here is "
-           f"rare and worth a second look.</div>"
+        + _churn_bars(res.get("churn", {}), bool(res.get("restricted")))
+        + (f"<div style='color:{COLORS['gold']};margin-top:6px;font-size:0.7rem;'>⚠️ <b>Cash-flow caveat.</b> "
+           f"Cash-flow statements are filed half-yearly, so cash-driven signals refresh only in the June and "
+           f"December vintages — a change in them here is rare and worth a second look.</div>"
            if any(q in meta.get("cur_label", "") for q in ("Q1", "Q3")) else "")
         + "</div>", unsafe_allow_html=True)
 

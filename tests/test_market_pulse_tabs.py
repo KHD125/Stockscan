@@ -170,7 +170,7 @@ def test_movers_previous_side_is_rescored_by_the_same_engine_behind_a_click():
         "the previous vintage is not re-scored with the live engine/mode/profile")
     assert "_mv_clean = _load_vintage_clean(_mv_pick)" in blk, "the archived copy no longer takes the live loader"
     assert blk.index('key="mp_mv_go"') < blk.index("_load_vintage_clean("), "the load is not gated behind the button"
-    assert "st.status(" in blk and blk.index("st.status(") < blk.index("_load_vintage_clean("), (
+    assert "_mv_ph.status(" in blk and blk.index("_mv_ph.status(") < blk.index("_load_vintage_clean("), (
         "the phased progress container is gone — a bare minute reads as a hang")
     for fn in ("def _load_vintage_clean(", "def _score_vintage("):
         i = src.index(fn)
@@ -222,6 +222,33 @@ def test_movers_reason_chips_use_the_shared_cascade_helper_and_the_button_relabe
     click_body = blk[i:blk.index('if st.session_state.get("mp_mv_loaded") != _mv_pick', i)]
     assert 'st.session_state["mp_mv_loaded"] = _mv_pick' in click_body and "st.rerun()" in click_body, (
         "the click must stage the pick AND rerun, or the label lags one run behind")
+
+
+def test_movers_setup_is_one_compact_row_and_the_payoff_is_above_the_fold():
+    """THE FOLD, pinned structurally (a pixel cannot be unit-tested; the browser measured it).
+    Measured live before the fix: seven controls and ~280 words above ⭐ What matters, which
+    began ~900px down a 732px viewport. Now: a one-line caption (≤ 40 words); the archive id is
+    READ from session_state before any widget renders, so layout never dictates data flow; the
+    id box, picker and button share ONE st.columns row (the box moves into a ⚙️ popover once
+    secrets configure it); the phased status lives in a placeholder that is EMPTIED on success
+    with the elapsed time folded into the result header; the reason chips are registered with
+    the lens row's 🧹 via extra_keys; and restrict runs only when the lens actually narrowed the
+    frame, so chips alone can never stamp '(whole universe)' on an unrestricted page."""
+    _, blk = _movers_block()
+    cap = blk[blk.index("sec-cap'>") + len("sec-cap'>"):blk.index("</div>", blk.index("sec-cap'>"))]
+    assert len(cap.split()) <= 40, f"the caption is a paragraph again ({len(cap.split())} words)"
+    read = '_mv_id = str(st.session_state["mp_mv_index"]).strip()'
+    assert read in blk and blk.index(read) < blk.index("_load_archive_index("), (
+        "the archive id must be read from session_state before resolving, so layout is free")
+    assert blk.index(read) < blk.index('key="mp_mv_index"'), "the id is read after the widget instantiates — layout is coupled again"
+    assert "_mv_row = st.columns(" in blk, "setup controls are not on one compact row"
+    assert 'st.popover("⚙️' in blk, "no ⚙️ popover for the archive id once it is configured"
+    assert "_mv_ph = st.empty()" in blk and "_mv_ph.status(" in blk, "the phased status is not in a placeholder"
+    assert "_mv_ph.empty()" in blk, "the status row is never cleared after success — a dead row above the fold"
+    assert '"elapsed": _mv_elapsed' in blk, "the compare time is not handed to the header"
+    assert '_mp_lens_row(df, "mv", extra_keys=("mp_mv_why",))' in blk, "the reason chips are not registered with the lens 🧹"
+    assert "if len(_mv_cur_f) < len(df):" in blk, "restrict must run only when the lens narrowed the frame"
+    assert "Click **Compare**" in blk, "sanity: the pre-compare hint still exists"
 
 
 def test_movers_diffs_whole_frames_and_applies_the_lens_afterwards():

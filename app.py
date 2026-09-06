@@ -2352,34 +2352,55 @@ def _render_market_pulse():
         from ui.ui_movers import (JOIN_KEY as _MV_KEY, compute_movers, default_vintage, fy_quarter,
                                   reason_counts, render_movers, restrict)
 
+        # ONE LINE. Measured before this pass: seven controls and ~280 words sat above the first
+        # data row and ⭐ What matters began ~900px down a 732px viewport. The how-and-why now
+        # lives in the ⓘ tooltip on the result header, not in permanent prose.
         st.markdown(
-            f"<div class='sec-cap'>What changed since the previous <b>data vintage</b>. The previous "
-            f"side is an archived copy of the data sheet, <b>re-scored by this engine right now</b> — "
-            f"so every move below is the company changing, never PRISM changing. Market-wide "
-            f"(ignores sidebar filters); the lens row narrows the current side.</div>",
-            unsafe_allow_html=True,
-        )
+            "<div class='sec-cap'>What changed since the previous <b>data vintage</b> — the archived copy "
+            "re-scored by this engine, so a move is the company changing, never PRISM. Market-wide; the "
+            "filters narrow the current side.</div>", unsafe_allow_html=True)
 
-        # ── 1. Where the archive lives: secrets first, then a box (seed-before-instantiate) ──
+        # ── 1. Archive id: secrets → session (seed-before-instantiate), then READ FROM SESSION
+        # STATE before any widget renders. Streamlit commits a changed widget's value to
+        # session_state before the rerun starts (the fact cfg_mode relies on), so the box can sit
+        # wherever the layout wants — the compact row when unconfigured, a ⚙️ popover once secrets
+        # supply it — without the data flow depending on widget order.
         try:
             _mv_default_id = str(st.secrets.get("ARCHIVE_INDEX_SHEET_ID", "") or "")
         except Exception:                    # no secrets file at all (local dev without one)
             _mv_default_id = ""
         if "mp_mv_index" not in st.session_state:
             st.session_state["mp_mv_index"] = _mv_default_id
-        _mv_id = st.text_input(
-            "Archive index sheet ID — or one archived copy's ID", key="mp_mv_index",
-            placeholder="ID of 'PRISM Archive Index' (set ARCHIVE_INDEX_SHEET_ID in secrets to prefill)",
-            help="The Apps Script archiver keeps an index sheet of every archived vintage. Paste its "
-                 "ID once here (or set ARCHIVE_INDEX_SHEET_ID in Streamlit secrets). A single archived "
-                 "copy's ID also works — its vintage is read from the sheet's own name.",
-        ).strip()
+        _mv_id = str(st.session_state["mp_mv_index"]).strip()
+        _mv_configured = bool(_mv_default_id)
+
+        def _mv_id_box():
+            st.text_input(
+                "Archive index sheet ID — or one archived copy's ID", key="mp_mv_index",
+                placeholder="ID of 'PRISM Archive Index' (or set ARCHIVE_INDEX_SHEET_ID in secrets)",
+                help="The Apps Script archiver keeps an index sheet of every archived vintage. Paste its "
+                     "ID once here (or set ARCHIVE_INDEX_SHEET_ID in Streamlit secrets). A single archived "
+                     "copy's ID also works — its vintage is read from the sheet's own name.")
+
+        # ── 2. ONE compact setup row: [id box · picker · button] unconfigured, [picker · button · ⚙️]
+        # once secrets carry the id. Slots are filled as the data becomes known — a columns row does
+        # not care about fill order.
+        _mv_row = st.columns([3.0, 2.6, 1.4] if not _mv_configured else [3.4, 1.9, 0.7])
+        if _mv_configured:
+            with _mv_row[2]:
+                st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                with st.popover("⚙️", help="Archive index id — prefilled from secrets"):
+                    _mv_id_box()
+        else:
+            with _mv_row[0]:
+                _mv_id_box()
+        _mv_pk, _mv_bt = (_mv_row[1], _mv_row[2]) if not _mv_configured else (_mv_row[0], _mv_row[1])
 
         if not _mv_id:
             st.info("No archive configured. Paste the PRISM Archive Index sheet ID above (or set "
                     "ARCHIVE_INDEX_SHEET_ID in secrets). Nothing to compare until then.")
         else:
-            # ── 2. Resolve: an index (many vintages) or a single copy (one vintage from its name) ──
+            # ── 3. Resolve: an index (many vintages) or a single copy (one vintage from its name) ──
             _mv_ok, _mv_err = None, None
             try:
                 _mv_ok = _load_archive_index(_mv_id)
@@ -2403,51 +2424,50 @@ def _render_market_pulse():
                 st.info("The archive index has no usable ('ok') vintage yet. The first archived "
                         "quarter appears there after the ingest archives it.")
             else:
-                # ── 3. Pick the previous vintage. Options are index ROWS, not cascade facets:
-                # a stored id that is no longer in the index cannot be loaded at all, so
-                # snapping to the default here is honest, not the silent-widening class.
+                # ── 4. Pick the previous vintage. Options are index ROWS, not cascade facets: a
+                # stored id no longer in the index cannot be loaded at all, so snapping to the
+                # default here is honest, not the silent-widening class.
                 _mv_ids = list(_mv_ok["spreadsheet_id"])
                 _mv_lab = dict(zip(_mv_ok["spreadsheet_id"],
                                    _mv_ok["fy_quarter"] + " · " + _mv_ok["vintage_date"]))
                 _mv_def = default_vintage(_mv_ok)["spreadsheet_id"]
                 if st.session_state.get("mp_mv_pick") not in _mv_ids:
                     st.session_state["mp_mv_pick"] = _mv_def
-                _mv_pick = st.selectbox("Previous vintage", _mv_ids, key="mp_mv_pick",
-                                        format_func=lambda i: _mv_lab.get(i, i),
-                                        help="Default = the most recent on-cycle quarter (a clean quarter "
-                                             "boundary). Off-cycle rows are real data captured mid-quarter.")
+                with _mv_pk:
+                    _mv_pick = st.selectbox("Previous vintage", _mv_ids, key="mp_mv_pick",
+                                            format_func=lambda i: _mv_lab.get(i, i),
+                                            help="Default = the most recent on-cycle quarter (a clean quarter "
+                                                 "boundary). Off-cycle rows are real data captured mid-quarter.")
                 _mv_prev_v = str(_mv_ok.loc[_mv_ok["spreadsheet_id"] == _mv_pick, "vintage_date"].iloc[0])
                 _mv_prev_q = str(_mv_ok.loc[_mv_ok["spreadsheet_id"] == _mv_pick, "fy_quarter"].iloc[0])
                 _mv_cur_v = _fresh.data_date.isoformat() if _fresh.is_known else _mv_today.today().isoformat()
                 _mv_cur_q = fy_quarter(_mv_cur_v)
 
-                # ── 4. The re-score is ~1 minute once per (copy, engine, mode, profile). Market
-                # Pulse is a fragment and every inner tab body renders on every run, so it runs
-                # ONLY behind an explicit click; the click's choice persists so reruns keep showing.
-                # Once a compare has run for THIS pick the label says so — "Compare" again would
-                # invite a click that appears to do nothing; "Re-compare" is a re-run, which is
-                # what it does (the caches make it instant unless the engine or profile changed).
+                # ── 5. The re-score runs ONLY behind an explicit click (Market Pulse is a fragment;
+                # every inner-tab body renders on every run). Once a compare has run for THIS pick
+                # the label says "Re-compare" — a re-run is what it does (instant from cache unless
+                # the engine or profile changed). The rerun after staging recomputes that label: on
+                # the click run the button is instantiated BEFORE its own click is known.
                 _mv_done = st.session_state.get("mp_mv_loaded") == _mv_pick
                 _mv_btn = (f"↻ Re-compare with {_mv_lab[_mv_pick]}" if _mv_done
                            else f"🔁 Compare with {_mv_lab[_mv_pick]}")
-                if st.button(_mv_btn, key="mp_mv_go"):
-                    st.session_state["mp_mv_loaded"] = _mv_pick
-                    # Rerun so the label above is recomputed: on the click run itself the
-                    # button was instantiated BEFORE the click was known and still reads
-                    # "Compare" over a page that has just compared (seen live). The rerun
-                    # costs nothing — every frame it needs is cached by then.
-                    st.rerun()
+                with _mv_bt:
+                    st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                    if st.button(_mv_btn, key="mp_mv_go"):
+                        st.session_state["mp_mv_loaded"] = _mv_pick
+                        st.rerun()
                 if st.session_state.get("mp_mv_loaded") != _mv_pick:
                     st.info(f"Click **Compare** to re-score the {_mv_prev_q} copy ({_mv_prev_v}) with "
                             f"the current engine and diff it against today's data ({_mv_cur_v}). "
-                            f"About a minute the first time; instant after.")
+                            f"About ten seconds the first time; instant after.")
                 else:
-                    # PHASED, TIMED PROGRESS — the minute is the price of scoring a second universe
-                    # with the same engine (no honest shortcut exists); showing where it goes is
-                    # what keeps it from feeling like a hang. Phases: download+derive (cached on
-                    # the copy) → score (cached on copy+engine+mode+profile) → diff (< 0.1 s).
-                    _mv_res = None
-                    with st.status(f"Comparing with {_mv_prev_q} ({_mv_prev_v})…", expanded=False) as _mv_st:
+                    # PHASED, TIMED PROGRESS in a PLACEHOLDER: the phases are for the wait
+                    # (download+derive cached on the copy → score cached on copy+engine+mode+profile
+                    # → diff); on success the row is cleared and the total folds into the result
+                    # header, so no dead row sits above the fold. On error the status stays, in red.
+                    _mv_res, _mv_elapsed = None, None
+                    _mv_ph = st.empty()
+                    with _mv_ph.status(f"Comparing with {_mv_prev_q} ({_mv_prev_v})…", expanded=False) as _mv_st:
                         try:
                             _t0 = time.perf_counter()
                             _mv_st.update(label="① Downloading the archived copy and deriving signals…")
@@ -2465,26 +2485,29 @@ def _render_market_pulse():
                             _mv_gap = (_mv_today.fromisoformat(_mv_cur_v) - _mv_today.fromisoformat(_mv_prev_v)).days
                             _mv_res = compute_movers(_mv_prev_df, df, days_between=_mv_gap)
                             _t3 = time.perf_counter()
+                            _mv_elapsed = _t3 - _t0
                             _mv_st.write(f"③ Diffed: {_mv_res['n_both']:,} stocks on both sides · {_t3 - _t2:.2f}s")
-                            _mv_st.update(label=f"Compared with {_mv_prev_q} ({_mv_prev_v}) in {_t3 - _t0:.0f}s",
+                            _mv_st.update(label=f"Compared with {_mv_prev_q} ({_mv_prev_v}) in {_mv_elapsed:.0f}s",
                                           state="complete")
                         except Exception as _e:
                             _mv_st.update(label=f"Could not compare with the {_mv_prev_q} copy", state="error")
                             st.error(f"Could not load or diff the {_mv_prev_q} copy: {_e}")
                             _mv_res = None
                     if _mv_res is not None:
+                        _mv_ph.empty()       # the timing folds into the result header
                         if _mv_prev_v == _mv_cur_v:
                             st.warning("The previous copy carries the SAME vintage date as today's "
                                        "data — nothing can have moved. Pick an older vintage.")
-                        # Lens row narrows the CURRENT side, applied AFTER the diff (never before —
-                        # a filtered-out stock would otherwise read as 'dropped').
-                        _mv_cur_f, _mv_act = _mp_lens_row(df, "mv")
-                        if _mv_act:
+                        # ── 6. FILTERS — one group, one 🧹. The lens row narrows the CURRENT side,
+                        # applied AFTER the diff (never before: a filtered-out stock would read as
+                        # 'dropped') and only when it actually narrowed the frame — chips alone must
+                        # never stamp '(whole universe)' on an unrestricted page. The reason chips
+                        # choose which material movers to show (inside material, before its cap;
+                        # a kept stock keeps all its reasons); they are registered with the lens
+                        # row's 🧹 via extra_keys so one Clear resets both.
+                        _mv_cur_f, _mv_act = _mp_lens_row(df, "mv", extra_keys=("mp_mv_why",))
+                        if len(_mv_cur_f) < len(df):
                             _mv_res = restrict(_mv_res, _mv_cur_f[_MV_KEY])
-                        # REASON CHIPS for ⭐ What matters — the same cascading multi-select every
-                        # Market Pulse filter uses (keep_selected rule, live counts = stocks carrying
-                        # the reason). The filter is applied INSIDE material, before its cap:
-                        # filtering the visible 40 would miss every match ranked 41st or lower.
                         _mv_rc = reason_counts(_mv_res)
                         _mv_why = _mp_ms(st.container(), "What matters — reasons", list(_mv_rc),
                                          "mp_mv_why",
@@ -2498,19 +2521,17 @@ def _render_market_pulse():
                             "prev_regime": _mv_prev_regime,
                             "cur_regime": str(df.attrs.get("detected_market_regime", "SIDEWAYS")),
                             "mode": analysis_mode, "profile": scoring_profile,
-                            "reasons": _mv_why,
+                            "reasons": _mv_why, "elapsed": _mv_elapsed,
                         })
                         # CLICK A MOVER, READ ITS TEAR-SHEET — the same handoff Tsunami and QGLP
-                        # use, and the loop this tab was missing: it found the candidates and
-                        # could not pass them on. Stage a transient key + rerun rather than
-                        # setting the xray_stock widget key (this tab renders AFTER the Tear-Sheet
-                        # selectbox, so a direct set raises set-after-instantiation). The
-                        # change-guard is essential: st.dataframe's selection persists across
-                        # reruns, so an unguarded set+rerun would loop forever.
+                        # use. Stage a transient key + rerun rather than setting the xray_stock
+                        # widget key (this tab renders AFTER the Tear-Sheet selectbox, so a direct
+                        # set raises set-after-instantiation). The change-guard is essential:
+                        # st.dataframe's selection persists across reruns, so an unguarded
+                        # set+rerun would loop forever.
                         if _mv_picked and _mv_picked != st.session_state.get("xray_stock"):
                             st.session_state["_pending_xray"] = _mv_picked
                             st.rerun()
-
 
 with tabs[3]:
     _render_market_pulse()
