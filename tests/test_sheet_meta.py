@@ -127,6 +127,12 @@ def test_the_publication_boundary_is_one_constant_in_all_three_places():
 
     hh, mm = sm._DATA_READY
 
+    # stockscans_sync/ is gitignored (the private ingest scaffold). On a code-only checkout the
+    # two files are absent: SKIP, never error — a test the public repo cannot run is a red suite
+    # for everyone but this machine. Locally the pin stays fully live.
+    if not (ROOT / "stockscans_sync" / "sheet_state.py").exists() or not (ROOT / "stockscans_sync" / "Prism.gs").exists():
+        pytest.skip("stockscans_sync/ (gitignored) not present on this checkout")
+
     state = (ROOT / "stockscans_sync" / "sheet_state.py").read_text(encoding="utf-8")
     m = re.search(r"^_DATA_READY\s*=\s*\((\d+),\s*(\d+)\)", state, re.M)
     assert m, "sheet_state.py no longer declares _DATA_READY as a literal pair"
