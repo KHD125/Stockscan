@@ -35,10 +35,13 @@ _DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 _FN_STAR_RE = re.compile(r"filename\*\s*=\s*[^']*''([^;]+)", re.I)
 _FN_RE = re.compile(r'filename\s*=\s*"([^"]+)"', re.I)
 
-# Market close, Asia/Kolkata. A session is only "available" once it has closed.
-_CLOSE_HOUR, _CLOSE_MIN = 15, 30
-# The pipeline's daily run time. Data can only be as fresh as the last run.
-_RUN_HOUR = 6
+# When today's session is safely available from the vendor, Asia/Kolkata. The
+# exchange closes at 15:30 but the vendor publishes EOD some time after; 19:00 is
+# the earliest hour with direct evidence. Kept identical to DATA_READY_IST in
+# stockscans_sync/Prism.gs and _DATA_READY in stockscans_sync/sheet_state.py --
+# the ingest names the sheet by this rule, so grading it by any other rule would
+# paint a perfectly current sheet amber.
+_DATA_READY = (19, 0)
 
 
 @dataclass(frozen=True)
@@ -120,20 +123,21 @@ def _prev_weekday(d: date) -> date:
 def expected_session(now: Optional[datetime] = None) -> date:
     """The most recent session the pipeline could already have captured.
 
-    Not simply "the last closed session": the job runs at 06:00 IST, before the
-    15:30 close, so today's close cannot appear in the sheet until tomorrow's
-    run. Comparing against the last CLOSED session would therefore paint the
-    card amber every weekday afternoon during completely normal operation.
+    Not "the last CLOSED session": between the 15:30 close and the vendor's EOD
+    publication there is nothing to fetch, so grading against the close would
+    paint the card amber every weekday afternoon during normal operation.
 
-    So: take the most recent 06:00 boundary, and the last session that had
-    closed before it.
+    Not "the last session before a 06:00 run" either -- that was the old rule,
+    and it made the card say "current" while the sheet sat a full session
+    behind, because it could never expect a session captured the same evening.
+
+    So: today's session once it is published, otherwise the previous weekday.
     """
     now = now or datetime.now(IST)
-    # The day whose 06:00 run is the most recent one to have happened.
-    boundary = now.date() if now.hour >= _RUN_HOUR else now.date() - timedelta(days=1)
-    # STRICTLY before that day: the 06:00 run precedes the 15:30 close, so the
-    # boundary day's own session is not in the sheet yet.
-    return _prev_weekday(boundary)
+    today = now.date()
+    if today.weekday() < 5 and (now.hour, now.minute) >= _DATA_READY:
+        return today
+    return _prev_weekday(today)
 
 
 def sessions_between(start: date, end: date) -> int:

@@ -1,10 +1,18 @@
 """Contract tests for the data-freshness label (core/sheet_meta.py).
 
 The label's whole job is to tell the truth about how old the sheet is. The
-subtle part is WHICH session counts as current: the pipeline runs at 06:00 IST,
-before the 15:30 close, so today's close cannot be in the sheet until tomorrow's
-run. Grading against the last CLOSED session would show "behind" every weekday
-afternoon during entirely normal operation -- the pins below fix that boundary.
+subtle part is WHICH session counts as current, and it can be wrong in two
+directions:
+
+  too eager  -- the exchange closes at 15:30 but the vendor publishes EOD later,
+                so grading against the last CLOSED session shows "behind" every
+                weekday afternoon during entirely normal operation;
+  too lazy   -- the original rule keyed off a nominal 06:00 run and so could
+                never expect a session captured the same evening, which read
+                "current" while the sheet sat a full session behind.
+
+Both are pinned below, along with the boundary itself, which must stay identical
+in all three places that use it (this module, sheet_state.py, Prism.gs).
 """
 
 from __future__ import annotations
@@ -59,26 +67,75 @@ def test_data_date_parsed_from_title(title, expected):
 
 
 # ------------------------------------------------------------- session boundary
-def test_expected_session_is_the_previous_weekday_after_the_run():
-    # Tue 06:00 has passed -> the run captured Monday's close.
+def test_expected_session_is_yesterdays_before_todays_is_published():
+    # Tue 10:00 -- Monday's session was published last evening, Tuesday's is not
+    # out yet.
     assert sm.expected_session(_at(2026, 9, 1, 10)) == date(2026, 8, 31)
 
 
 def test_afternoon_does_not_make_the_sheet_look_stale():
-    """The regression this boundary exists to prevent.
+    """The first regression this boundary prevents: false amber.
 
-    At 16:00 Tuesday, Tuesday's session HAS closed -- but the pipeline will not
-    fetch it until Wednesday 06:00. Grading against the last closed session
-    would show 'behind' here, every single weekday afternoon.
+    At 16:00 Tuesday, Tuesday's session HAS closed on the exchange -- but the
+    vendor has not published EOD, so there is nothing to fetch. Grading against
+    the last CLOSED session would show 'behind' every single weekday afternoon.
     """
     morning = sm.expected_session(_at(2026, 9, 1, 10))
     afternoon = sm.expected_session(_at(2026, 9, 1, 16))
     assert morning == afternoon == date(2026, 8, 31)
 
 
-def test_before_the_run_still_points_at_the_older_session():
-    # 05:00 Tuesday: today's 06:00 job has not run, so Friday is still the best available.
-    assert sm.expected_session(_at(2026, 9, 1, 5)) == date(2026, 8, 28)
+def test_evening_expects_todays_session():
+    """The second regression, and the reason this rule was rewritten: false green.
+
+    The old rule keyed off a nominal 06:00 run, so it could NEVER expect a
+    session captured the same evening -- the card read "current" at 19:40 on
+    2026-09-07 while the sheet still held 2026-09-04. Being permanently one
+    session behind was invisible, which is worse than being behind.
+    """
+    assert sm.expected_session(_at(2026, 9, 7, 19, 40)) == date(2026, 9, 7)
+
+
+def test_the_publication_boundary_is_inclusive_and_minute_precise():
+    assert sm.expected_session(_at(2026, 9, 7, 18, 59)) == date(2026, 9, 4)
+    assert sm.expected_session(_at(2026, 9, 7, 19, 0)) == date(2026, 9, 7)
+
+
+def test_after_midnight_keeps_the_evenings_session():
+    """01:00 Tuesday is still Monday's data -- an hour-only rule that reset at
+    midnight would drop back to Friday and re-fetch for nothing."""
+    assert sm.expected_session(_at(2026, 9, 8, 1, 0)) == date(2026, 9, 7)
+
+
+def test_friday_evening_expects_friday():
+    assert sm.expected_session(_at(2026, 9, 4, 20, 0)) == date(2026, 9, 4)
+
+
+def test_saturday_never_expects_a_session_that_does_not_exist():
+    """The weekday guard is load-bearing: Saturday and Sunday are past 19:00 too,
+    so a time-only rule would expect a Saturday close and grade forever amber."""
+    assert sm.expected_session(_at(2026, 9, 5, 20, 0)) == date(2026, 9, 4)
+    assert sm.expected_session(_at(2026, 9, 6, 23, 0)) == date(2026, 9, 4)
+
+
+def test_the_publication_boundary_is_one_constant_in_all_three_places():
+    """core/sheet_meta.py grades the sheet, stockscans_sync/sheet_state.py decides
+    whether to fetch, and Prism.gs writes the name they both read. If these drift
+    the gate loops forever (expecting a name the ingest will never write) or the
+    card paints a perfectly current sheet amber."""
+    import re
+
+    hh, mm = sm._DATA_READY
+
+    state = (ROOT / "stockscans_sync" / "sheet_state.py").read_text(encoding="utf-8")
+    m = re.search(r"^_DATA_READY\s*=\s*\((\d+),\s*(\d+)\)", state, re.M)
+    assert m, "sheet_state.py no longer declares _DATA_READY as a literal pair"
+    assert (int(m.group(1)), int(m.group(2))) == (hh, mm)
+
+    gs = (ROOT / "stockscans_sync" / "Prism.gs").read_text(encoding="utf-8")
+    m = re.search(r"^var DATA_READY_IST\s*=\s*'(\d{2}):(\d{2})'", gs, re.M)
+    assert m, "Prism.gs no longer declares DATA_READY_IST as a literal 'HH:mm'"
+    assert (int(m.group(1)), int(m.group(2))) == (hh, mm)
 
 
 @pytest.mark.parametrize("when,expected", [
